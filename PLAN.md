@@ -535,7 +535,7 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 
 ### 6.2 Phased Implementation
 
-#### Phase 0: Project Scaffolding (Days 1–2)
+#### [DONE] Phase 0: Project Scaffolding (Days 1–2)
 
 **Goal:** Repo, tooling, all local services running with `docker compose up`.
 
