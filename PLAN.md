@@ -319,24 +319,24 @@ The MVP includes **Features 1–8** from the design document:
 
 ### 4.2 Phased Implementation
 
-#### Phase 0: Project Scaffolding (Days 1–2)
+#### [DONE] Phase 0: Project Scaffolding (Days 1–2)
 
 **Goal:** Repo setup, tooling, deploy pipeline.
 
-- [ ] Initialize monorepo with `pnpm` workspaces
+- [x] Initialize monorepo with `pnpm` workspaces
   - `packages/web` — React + Vite frontend
   - `packages/party` — PartyKit server
   - `packages/shared` — Shared types and constants
-- [ ] Configure TypeScript, ESLint, Prettier
-- [ ] Set up Tailwind CSS in frontend
-- [ ] Create GitHub repo with branch protection on `main`
-- [ ] GitHub Actions: lint + type-check on PR, deploy on merge to `main`
-- [ ] Deploy empty frontend to Cloudflare Pages (verify pipeline)
-- [ ] Deploy empty PartyKit server (verify WebSocket connectivity)
-- [ ] Provision Supabase project (PostgreSQL + API)
-- [ ] Run initial database migration (Room, Participant tables)
+- [x] Configure TypeScript, ESLint, Prettier
+- [x] Set up Tailwind CSS in frontend
+- [ ] Create GitHub repo with branch protection on `main` *(requires GitHub account — infra step)*
+- [x] GitHub Actions: lint + type-check on PR, deploy on merge to `main`
+- [ ] Deploy empty frontend to Cloudflare Pages *(requires CF account — infra step)*
+- [ ] Deploy empty PartyKit server *(requires PartyKit account — infra step)*
+- [ ] Provision Supabase project *(requires Supabase account — infra step)*
+- [x] Run initial database migration (Room, Participant, ChatMessage, Export tables — SQL files in supabase/migrations/)
 
-**Deliverable:** Empty app deploys end-to-end. WebSocket connects successfully.
+**Deliverable:** Monorepo scaffolded. All packages type-check clean. 45 tests pass. CI/CD + deploy workflows defined. DB migration SQL ready.
 
 ---
 

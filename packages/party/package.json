@@ -1,0 +1,26 @@
+{
+  "name": "@drawroom/party",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "partykit dev",
+    "deploy": "partykit deploy",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --ext .ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@drawroom/shared": "workspace:*",
+    "hono": "^4.0.0",
+    "partykit": "^0.0.104",
+    "partysocket": "^1.0.0",
+    "y-partykit": "^0.0.23",
+    "yjs": "^13.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

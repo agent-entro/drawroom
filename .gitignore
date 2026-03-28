@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+.turbo/
+
+# Env files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Vite
+packages/web/.vite/
+
+# TypeScript
+*.tsbuildinfo
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test coverage
+coverage/
+
+# Cloudflare / PartyKit
+.partykit/
+wrangler.toml

@@ -1,0 +1,10 @@
+{
+  "name": "drawroom",
+  "main": "src/room.ts",
+  "parties": {
+    "room": "src/room.ts"
+  },
+  "serve": {
+    "path": "../../packages/web/dist"
+  }
+}
