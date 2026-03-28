@@ -552,8 +552,8 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 - [x] Write `docker-compose.yml` (PostgreSQL, Redis, y-websocket, API)
 - [x] Run `docker compose up -d` — verify all containers healthy
 - [x] Write and run initial SQL migrations (Room, Participant tables)
-- [ ] Verify WebSocket connectivity: browser → `ws://localhost:1234` → y-websocket ping
-- [ ] GitHub Actions: lint + type-check on PR
+- [x] Verify WebSocket connectivity: browser → `ws://localhost:1234` → y-websocket ping
+- [x] GitHub Actions: lint + type-check on PR
 
 **Deliverable:** `docker compose up && pnpm --filter web dev` starts the full stack. WebSocket connects. Migrations applied.
 
