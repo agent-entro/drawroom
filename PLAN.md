@@ -1,20 +1,24 @@
-# DrawRoom — Technical Plan
+# DrawRoom — Technical Plan (Local Development)
 
 ### Real-Time Collaborative Canvas + Chat Application
 
 ---
 
 **Based on:** DrawRoom Design Document v1.0 (2026-03-27)
-**Plan Version:** 1.0 | **Date:** 2026-03-28 | **Status:** Draft
+**Plan Version:** 1.1 | **Date:** 2026-03-28 | **Status:** Draft — Local Dev Focus
+
+> **Scope of this revision:** This plan targets a **local development environment** rather than managed cloud infrastructure. All services run on the developer's machine via Docker Compose. External access (for mobile testing, stakeholder demos, or webhook callbacks) is provided via tunnels or an Addy reverse proxy.
 
 ---
 
 ## Table of Contents
 
 1. [Tech Stack](#1-tech-stack)
-2. [Entity Relations](#2-entity-relations)
-3. [User Flows](#3-user-flows)
-4. [MVP Implementation Plan](#4-mvp-implementation-plan)
+2. [Local Dev Environment](#2-local-dev-environment)
+3. [External Exposure](#3-external-exposure)
+4. [Entity Relations](#4-entity-relations)
+5. [User Flows](#5-user-flows)
+6. [MVP Implementation Plan](#6-mvp-implementation-plan)
 
 ---
 
@@ -24,51 +28,304 @@
 
 | Layer | Technology | Justification |
 |---|---|---|
-| **Framework** | **React 19 + Vite 6** | Mature ecosystem, fast HMR, broad hiring pool. Vite gives sub-second dev builds. |
-| **Canvas Engine** | **tldraw SDK v3** | Purpose-built for collaborative drawing. Ships with shapes, selection, zoom, pan, and a CRDT-compatible data model. Eliminates months of custom canvas work. |
-| **Real-Time State** | **Yjs** (CRDT library) | Industry-standard CRDT for conflict-free collaboration. Works offline-first; merges divergent edits deterministically. Pairs natively with tldraw via `y-tldraw`. |
-| **Styling** | **Tailwind CSS v4** | Utility-first, zero-runtime, small bundle. Ideal for rapid UI iteration on chat panel and toolbar. |
-| **Chat UI** | **Custom React components** | Chat is simple enough (message list + input) that a library adds unnecessary weight. Use `react-virtuoso` only if message lists exceed 1,000+ items. |
-| **State Management** | **Zustand** | Lightweight store for local UI state (tool selection, panel visibility, user preferences). Yjs handles all shared/collaborative state. |
-| **Routing** | **React Router v7** | Minimal routing: landing page (`/`), room (`/r/:roomId`). No need for a full framework like Next.js since there's no SEO-critical content beyond the landing page. |
+| **Framework** | **React 19 + Vite 6** | Fast HMR, sub-second dev builds — ideal for local iteration. |
+| **Canvas Engine** | **tldraw SDK v3** | Purpose-built collaborative drawing. Ships selection, zoom, pan, and a CRDT-compatible data model. |
+| **Real-Time State** | **Yjs** (CRDT library) | Industry-standard CRDT. Works offline-first; merges divergent edits deterministically. |
+| **Styling** | **Tailwind CSS v4** | Utility-first, zero-runtime. |
+| **Chat UI** | **Custom React components** | Simple enough to own. Add `react-virtuoso` only past 1,000+ messages. |
+| **State Management** | **Zustand** | Lightweight store for local UI state. Yjs handles all shared state. |
+| **Routing** | **React Router v7** | Two routes: landing (`/`) and room (`/r/:roomId`). |
 
 ### 1.2 Backend
 
 | Layer | Technology | Justification |
 |---|---|---|
-| **Real-Time Server** | **PartyKit** | Managed Durable Objects infrastructure. Each room = one PartyKit "party" with isolated state, built-in WebSocket handling, and auto-hibernation. Dramatically reduces ops burden vs. self-hosting y-websocket. |
-| **CRDT Sync** | **y-partykit** | Official Yjs provider for PartyKit. Handles document sync, awareness (cursors), and persistence out of the box. |
-| **REST API** | **Hono** (on PartyKit or Cloudflare Workers) | Ultra-lightweight (14KB), TypeScript-native, runs on edge. Handles room creation, metadata, export triggers. |
-| **Database** | **PostgreSQL** (via **Supabase**) | Room metadata, chat history, user accounts (Phase 2). Supabase provides hosted Postgres + auto-generated REST API + auth (later). |
-| **File Storage** | **Cloudflare R2** | S3-compatible, zero egress fees. Stores canvas exports (PNG/SVG) and uploaded images (Phase 2). |
-| **Background Jobs** | **Supabase Edge Functions** or **Cloudflare Workers (Cron Triggers)** | Room cleanup (delete rooms inactive >7 days), export generation. |
+| **Real-Time Server** | **y-websocket** (self-hosted Node.js) | Runs locally in Docker. Official Yjs WebSocket provider — handles document sync, awareness (cursors), and optional LevelDB persistence. |
+| **REST API** | **Hono** (Node.js, standalone) | Lightweight TypeScript server for room creation, metadata, export triggers. Runs as a separate local service. |
+| **Database** | **PostgreSQL 16** (Docker) | Room metadata, chat history, participant records. No external dependency. |
+| **Cache / Pub-Sub** | **Redis 7** (Docker) | Session data, participant presence, chat fan-out between the Hono API and y-websocket. |
+| **File Storage** | **Local filesystem** (bind-mounted volume) | Canvas exports (PNG/SVG) and uploaded images stored at `./data/exports`. No R2/S3 dependency during dev. |
+| **Background Jobs** | **node-cron** inside the API process | Room cleanup (delete rooms inactive >7 days). Runs on a daily schedule inside the Hono server process. |
 
-### 1.3 Infrastructure & DevOps
+### 1.3 Infrastructure (Local Dev)
 
 | Layer | Technology | Justification |
 |---|---|---|
-| **Frontend Hosting** | **Cloudflare Pages** | Global CDN, instant deploys from Git, free tier generous. |
-| **Real-Time Hosting** | **PartyKit (managed)** | Handles WebSocket scaling, room isolation, and state persistence. No infra to manage. |
-| **CI/CD** | **GitHub Actions** | Lint, type-check, test, deploy on push. Simple 2-stage pipeline (staging → production). |
-| **Monitoring** | **Sentry** (errors) + **PostHog** (analytics) | Sentry for real-time error tracking with source maps. PostHog for product analytics (room creation, session length, feature usage). |
-| **DNS / Domain** | **Cloudflare** | Unified with Pages and R2. Single dashboard for DNS, caching, security. |
+| **Orchestration** | **Docker Compose** | Single `docker compose up` starts all services. |
+| **Frontend Dev Server** | **Vite** (`localhost:5173`) | HMR, instant feedback during UI development. |
+| **API Server** | **Hono on Node.js** (`localhost:3000`) | Room management REST API. |
+| **WebSocket Server** | **y-websocket** (`localhost:1234`) | CRDT sync and chat relay. |
+| **Database** | **PostgreSQL** (`localhost:5432`) | Accessed directly by API and via `psql` for migrations. |
+| **Cache** | **Redis** (`localhost:6379`) | Accessed by API and WebSocket server. |
+| **External Access** | **ngrok / Cloudflare Tunnel / Addy** | Punch through to local services — see [Section 3](#3-external-exposure). |
 
-### 1.4 Stack Decision: Why PartyKit Over Self-Hosted
+### 1.4 Stack Decision: Why y-websocket Over PartyKit Locally
 
-| Concern | Self-Hosted (y-websocket + Node.js) | PartyKit |
+The original cloud plan used PartyKit (managed Durable Objects). For local dev this is impractical: PartyKit has no local emulator and requires a live cloud deployment.
+
+| Concern | PartyKit (cloud) | y-websocket (local) |
 |---|---|---|
-| Room isolation | Manual process management | Automatic (Durable Objects) |
-| Scaling | Requires sticky sessions, load balancer config | Auto-scales per room |
-| Persistence | Custom Yjs storage adapter | Built-in with y-partykit |
-| Cold start | Always-on servers (cost) | Hibernates idle rooms (free) |
-| Ops burden | High (Docker, health checks, restarts) | Near-zero |
-| **Verdict** | Good for >100K concurrent rooms | **Best for MVP through 50K rooms** |
+| Local dev support | ❌ No emulator | ✅ Runs in Docker |
+| Room isolation | Automatic (Durable Objects) | Process-level partitioning via room IDs |
+| Persistence | Built-in | LevelDB adapter (drop-in) |
+| Ops burden | Near-zero (cloud) | Low (Docker Compose) |
+| Cost during dev | Free tier, but requires internet | Zero |
+| **Verdict** | Best for production | **Best for local dev** |
+
+Production migration path: swap `y-websocket` for PartyKit + `y-partykit` provider. The Yjs document model is identical — no frontend changes required.
 
 ---
 
-## 2. Entity Relations
+## 2. Local Dev Environment
 
-### 2.1 Core Entities
+### 2.1 Service Map
+
+```
+localhost:5173  ←  Vite dev server (React frontend)
+localhost:3000  ←  Hono REST API
+localhost:1234  ←  y-websocket (CRDT sync + chat)
+localhost:5432  ←  PostgreSQL
+localhost:6379  ←  Redis
+```
+
+### 2.2 docker-compose.yml (Canonical)
+
+```yaml
+# docker-compose.yml — DrawRoom local dev
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: drawroom
+      POSTGRES_USER: drawroom
+      POSTGRES_PASSWORD: devpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d  # auto-run on first boot
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  yws:
+    build: ./packages/yws          # thin Dockerfile wrapping y-websocket
+    environment:
+      PORT: 1234
+      REDIS_URL: redis://redis:6379
+      PERSISTENCE: leveldb
+      PERSISTENCE_DIR: /data/yjs
+    ports:
+      - "1234:1234"
+    volumes:
+      - yjs_data:/data/yjs
+    depends_on:
+      - redis
+
+  api:
+    build: ./packages/api
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://drawroom:devpassword@postgres:5432/drawroom
+      REDIS_URL: redis://redis:6379
+      EXPORT_DIR: /data/exports
+    ports:
+      - "3000:3000"
+    volumes:
+      - export_data:/data/exports
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  postgres_data:
+  yjs_data:
+  export_data:
+```
+
+The frontend (`packages/web`) runs outside Docker via `pnpm dev` for the fastest HMR experience.
+
+### 2.3 Environment Variables (`.env.local`)
+
+```bash
+# packages/web/.env.local
+VITE_API_URL=http://localhost:3000
+VITE_YWS_URL=ws://localhost:1234
+
+# packages/api/.env
+DATABASE_URL=postgresql://drawroom:devpassword@localhost:5432/drawroom
+REDIS_URL=redis://localhost:6379
+EXPORT_DIR=./data/exports
+PORT=3000
+```
+
+When using external exposure (tunnel or Addy), update `VITE_API_URL` and `VITE_YWS_URL` to the public URLs so that remote clients can connect.
+
+### 2.4 Running Locally
+
+```bash
+# 1. Start infrastructure (Postgres, Redis, y-websocket, API)
+docker compose up -d
+
+# 2. Run DB migrations
+pnpm --filter api db:migrate
+
+# 3. Start frontend dev server
+pnpm --filter web dev
+
+# App is now accessible at http://localhost:5173
+```
+
+---
+
+## 3. External Exposure
+
+Local services are not accessible outside the developer's machine by default. Two options are supported depending on use case.
+
+### 3.1 Option A — Tunneling (ngrok / Cloudflare Tunnel)
+
+Best for: quick demos, webhook testing, one-off mobile device testing.
+
+**ngrok:**
+```bash
+# Install: https://ngrok.com/download
+# ngrok.yml
+version: "2"
+tunnels:
+  web:
+    proto: http
+    addr: 5173
+  api:
+    proto: http
+    addr: 3000
+  yws:
+    proto: http
+    addr: 1234
+
+ngrok start --all --config ngrok.yml
+```
+
+ngrok assigns public URLs like `https://abc123.ngrok.io`. Update `.env.local` with those URLs, then restart Vite.
+
+**Cloudflare Tunnel (persistent, free):**
+```bash
+# Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+cloudflared tunnel create drawroom-dev
+cloudflared tunnel route dns drawroom-dev dev.yourdomain.com
+
+# config.yml
+tunnel: <TUNNEL_ID>
+credentials-file: ~/.cloudflared/<TUNNEL_ID>.json
+ingress:
+  - hostname: drawroom.yourdomain.com
+    service: http://localhost:5173
+  - hostname: api.drawroom.yourdomain.com
+    service: http://localhost:3000
+  - hostname: yws.drawroom.yourdomain.com
+    service: http://localhost:1234
+  - service: http_status:404
+
+cloudflared tunnel run drawroom-dev
+```
+
+Cloudflare Tunnel gives stable URLs tied to your domain — good for ongoing dev with external collaborators.
+
+**Tradeoffs:**
+
+| | ngrok | Cloudflare Tunnel |
+|---|---|---|
+| Setup time | 2 min | 15 min |
+| URL stability | Ephemeral (free tier) | Stable (your domain) |
+| Cost | Free (limited) / Paid | Free |
+| 3rd-party dependency | Yes (ngrok.com) | Yes (Cloudflare) |
+| WebSocket support | ✅ | ✅ |
+
+---
+
+### 3.2 Option B — Addy Reverse Proxy (Preferred for Ongoing Dev)
+
+Best for: stable local domains, multiple services, SSL, no third-party dependency, team-wide consistency.
+
+**Addy** acts as a local reverse proxy with automatic TLS certificate generation via mkcert. All services get stable `*.local.dev` domains pointing to `127.0.0.1`.
+
+#### Setup
+
+```bash
+# 1. Install Addy (https://github.com/addy-dev/addy or your internal distribution)
+brew install addy       # macOS
+# or: curl -fsSL https://addy.dev/install.sh | sh
+
+# 2. Trust the local CA (one-time)
+addy trust
+
+# 3. Define proxy rules in addy.yml (project root)
+```
+
+**addy.yml:**
+```yaml
+version: "1"
+proxies:
+  - domain: drawroom.local.dev
+    target: http://localhost:5173
+    tls: true
+
+  - domain: api.drawroom.local.dev
+    target: http://localhost:3000
+    tls: true
+
+  - domain: yws.drawroom.local.dev
+    target: http://localhost:1234
+    tls: true
+    websocket: true       # ensures Upgrade headers are forwarded
+```
+
+```bash
+# 4. Start Addy
+addy up
+```
+
+Addy handles `/etc/hosts` entries and certificate management automatically. Services are then reachable at:
+
+```
+https://drawroom.local.dev         ← frontend
+https://api.drawroom.local.dev     ← REST API
+wss://yws.drawroom.local.dev       ← WebSocket (y-websocket)
+```
+
+Update `.env.local`:
+```bash
+VITE_API_URL=https://api.drawroom.local.dev
+VITE_YWS_URL=wss://yws.drawroom.local.dev
+```
+
+#### Exposing Addy Domains to External Devices
+
+For access from mobile devices on the same network, point the device's DNS to the developer machine's LAN IP. For external internet access, combine Addy with a Cloudflare Tunnel forwarding to Addy's HTTPS port.
+
+**Tradeoffs vs. tunneling:**
+
+| | Tunnel (ngrok/CF) | Addy |
+|---|---|---|
+| External internet access | ✅ | ❌ (LAN only unless combined with tunnel) |
+| Stable URLs | ✅ CF / ❌ ngrok | ✅ Always |
+| HTTPS/WSS | ✅ | ✅ (mkcert CA) |
+| Zero third-party dependency | ❌ | ✅ |
+| Multi-service management | Manual | Single config file |
+| Setup complexity | Low–Medium | Low (after one-time CA trust) |
+
+**Recommendation:** Use **Addy** as the default daily-driver for local dev. Add a **Cloudflare Tunnel** when you specifically need external internet access (stakeholder review, mobile testing on cellular).
+
+---
+
+## 4. Entity Relations
+
+*(Schema is backend-agnostic and identical to the production plan.)*
+
+### 4.1 Core Entities
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -91,16 +348,16 @@
 │  └─────────────┘                                                    │
 │                                                                      │
 │  ┌─────────────┐                                                    │
-│  │CanvasState  │──1:1── Room  (Yjs document blob, managed by       │
-│  └─────────────┘               PartyKit, not in SQL)                │
+│  │CanvasState  │──1:1── Room  (Yjs document binary, managed by     │
+│  └─────────────┘               y-websocket + LevelDB, not in SQL)   │
 │                                                                      │
 │  ┌─────────────┐                                                    │
-│  │  Export      │──N:1── Room                                       │
+│  │  Export      │──N:1── Room  (file on local volume)              │
 │  └─────────────┘                                                    │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Entity Definitions
+### 4.2 Entity Definitions
 
 #### `Room`
 | Column | Type | Constraints | Description |
@@ -112,7 +369,7 @@
 | `last_active_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT `now()` | Updated on any activity; used for 7-day cleanup |
 | `expires_at` | `TIMESTAMPTZ` | GENERATED (`last_active_at + interval '7 days'`) | Computed expiry for cleanup job |
 | `is_persistent` | `BOOLEAN` | DEFAULT `false` | True if owned by a registered user (Phase 2) |
-| `owner_id` | `UUID` | FK → `User.id`, NULLABLE | NULL for anonymous rooms (Phase 2) |
+| `owner_id` | `UUID` | FK → `User.id`, NULLABLE | NULL for anonymous rooms |
 | `max_participants` | `INT` | DEFAULT `5` | Tier-based limit |
 | `status` | `ENUM('active','archived','deleted')` | DEFAULT `'active'` | Room lifecycle state |
 
@@ -122,10 +379,10 @@
 | `id` | `UUID` | PK | Unique participant identifier |
 | `room_id` | `UUID` | FK → `Room.id`, NOT NULL | Room this participant belongs to |
 | `display_name` | `VARCHAR(30)` | NOT NULL | User-chosen name for this session |
-| `color` | `VARCHAR(7)` | NOT NULL | Hex color assigned for cursor/chat (e.g., `#4A90D9`) |
+| `color` | `VARCHAR(7)` | NOT NULL | Hex color for cursor/chat |
 | `session_token` | `VARCHAR(64)` | UNIQUE, NOT NULL | Stored in localStorage; identifies returning participants |
 | `joined_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT `now()` | When they first joined |
-| `last_seen_at` | `TIMESTAMPTZ` | NOT NULL | Updated on heartbeat; used for presence |
+| `last_seen_at` | `TIMESTAMPTZ` | NOT NULL | Updated on heartbeat |
 | `user_id` | `UUID` | FK → `User.id`, NULLABLE | Linked account if logged in (Phase 2) |
 
 **Index:** `(room_id, session_token)` — fast participant lookup on rejoin.
@@ -135,22 +392,22 @@
 |---|---|---|---|
 | `id` | `UUID` | PK | Message identifier |
 | `room_id` | `UUID` | FK → `Room.id`, NOT NULL | Room this message belongs to |
-| `participant_id` | `UUID` | FK → `Participant.id`, NOT NULL | Who sent it |
+| `participant_id` | `UUID` | FK → `Participant.id`, NOT NULL | Sender |
 | `content` | `TEXT` | NOT NULL, max 2000 chars | Message text |
-| `type` | `ENUM('message','comment','system')` | DEFAULT `'message'` | Regular chat, canvas-anchored comment, or system event |
+| `type` | `ENUM('message','comment','system')` | DEFAULT `'message'` | Message category |
 | `canvas_x` | `FLOAT` | NULLABLE | X coordinate if type = `comment` |
 | `canvas_y` | `FLOAT` | NULLABLE | Y coordinate if type = `comment` |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT `now()` | When sent |
 
-**Index:** `(room_id, created_at)` — chronological message retrieval.
+**Index:** `(room_id, created_at)` — chronological retrieval.
 
-#### `Export` (Phase 1)
+#### `Export`
 | Column | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | `UUID` | PK | Export identifier |
 | `room_id` | `UUID` | FK → `Room.id`, NOT NULL | Source room |
 | `format` | `ENUM('png','svg')` | NOT NULL | Export format |
-| `file_url` | `TEXT` | NOT NULL | R2 object URL |
+| `file_path` | `TEXT` | NOT NULL | Path relative to `EXPORT_DIR` volume mount |
 | `file_size_bytes` | `INT` | NOT NULL | Size for quota tracking |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT `now()` | When generated |
 | `requested_by` | `UUID` | FK → `Participant.id` | Who triggered the export |
@@ -165,146 +422,105 @@
 | `tier` | `ENUM('free','pro','team')` | DEFAULT `'free'` | Subscription tier |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL | Registration date |
 
-### 2.3 Canvas State (Non-Relational)
+### 4.3 Canvas State (Non-Relational)
 
-The canvas state is **not stored in PostgreSQL**. It lives as a Yjs CRDT document managed by PartyKit:
+Canvas state is **not stored in PostgreSQL**. It lives as a Yjs CRDT document managed by y-websocket:
 
-- **In-memory:** Active rooms hold the Yjs document in the PartyKit Durable Object.
-- **Persisted:** On room hibernation or periodic snapshots, the Yjs document binary is written to PartyKit's built-in storage (backed by Cloudflare Durable Object storage).
-- **Format:** Binary Yjs update log (compact, incrementally appendable).
-- **Size estimate:** ~50KB–2MB per room for typical whiteboard sessions.
+- **In-memory:** Active rooms hold the Yjs document in the y-websocket process.
+- **Persisted:** y-websocket writes Yjs document binary to LevelDB (Docker volume: `yjs_data`). Survives container restarts.
+- **Format:** Binary Yjs update log (~50KB–2MB per typical session).
 
 ---
 
-## 3. User Flows
+## 5. User Flows
 
-### 3.1 Flow: Create a Room
+*(Flows are structurally identical to the cloud plan. URL scheme is the same; only the backing infrastructure differs.)*
 
-```
-Actor: Creator (anonymous user)
-
-1. Creator visits drawroom.app
-2. Landing page loads (<2s target)
-3. Creator clicks "Create a Room"
-4. Frontend sends POST /api/rooms → Backend
-5. Backend generates:
-   - UUID for room ID
-   - Human-readable slug (adjective-noun-number pattern, e.g., "bright-owl-742")
-   - Room record in PostgreSQL
-   - PartyKit room instance (lazy — created on first WebSocket connection)
-6. Backend returns { slug, roomUrl }
-7. Frontend redirects to /r/bright-owl-742
-8. "Enter your name" modal appears
-9. Creator types display name, clicks "Join"
-10. Frontend:
-    - Generates session_token, stores in localStorage
-    - Opens WebSocket to PartyKit room
-    - Sends JOIN event with display_name + session_token
-11. PartyKit:
-    - Creates Participant record (via REST call to Supabase)
-    - Assigns cursor color
-    - Broadcasts PARTICIPANT_JOINED to all connections
-    - Sends full Yjs document state to new client
-12. Canvas and chat panel render. Creator sees empty canvas with their cursor.
-```
-
-### 3.2 Flow: Join an Existing Room
+### 5.1 Create a Room
 
 ```
-Actor: Guest (anonymous user with a shared link)
-
-1. Guest receives link: drawroom.app/r/bright-owl-742
-2. Guest clicks link → Frontend loads
-3. Frontend extracts slug from URL
-4. Frontend checks localStorage for existing session_token for this slug
-   - If found: auto-rejoin with previous display_name and color
-   - If not found: show "Enter your name" modal
-5. Guest enters display name → same steps as Create flow (step 10+)
-6. Guest's canvas populates with existing strokes (Yjs sync)
-7. Guest sees chat history (last 100 messages loaded via REST)
-8. Guest sees other participants' live cursors via Yjs awareness protocol
+1. User visits http://localhost:5173 (or https://drawroom.local.dev via Addy)
+2. Clicks "Create a Room"
+3. Frontend sends POST /api/rooms → Hono API (localhost:3000)
+4. API generates slug, creates Room record in local PostgreSQL
+5. Returns { slug, roomUrl }
+6. Frontend redirects to /r/bright-owl-742
+7. "Enter your name" modal
+8. User enters name → session_token generated → stored in localStorage
+9. Frontend opens WebSocket to ws://localhost:1234/r/bright-owl-742
+10. y-websocket creates/loads Yjs document for this room ID
+11. Participant record created via REST call to Hono API
+12. Canvas renders; user sees empty canvas with their cursor
 ```
 
-### 3.3 Flow: Real-Time Drawing Collaboration
+### 5.2 Join an Existing Room
 
 ```
-Actors: Multiple participants in the same room
-
-1. User A selects the Pen tool from the toolbar
-2. User A draws a stroke on the canvas
-3. tldraw captures the stroke as a shape object
-4. Yjs CRDT applies the shape locally (instant feedback)
-5. Yjs broadcasts the update via WebSocket to PartyKit
-6. PartyKit relays the Yjs update to all other connected clients
-7. User B and C see the stroke appear on their canvas (<100ms P95)
-8. PartyKit debounces and persists the Yjs document to storage (every 5s)
-
-Conflict scenario:
-- User A and User B draw on overlapping areas simultaneously
-- Yjs CRDT merges both strokes without conflict (both are preserved)
-- No "last write wins" — all strokes coexist
-
-Undo:
-- User A presses Ctrl+Z
-- tldraw reverts User A's last stroke only (per-user undo stack)
-- Yjs propagates the deletion to all clients
-- User B's strokes are unaffected
+1. Guest receives link (local URL or tunnel/Addy public URL)
+2. Frontend extracts slug
+3. Checks localStorage for existing session_token
+   - Found → auto-rejoin with previous name and color
+   - Not found → show display name modal
+4. Same WebSocket join flow as Create
+5. Canvas populates with existing Yjs state (full sync from y-websocket)
+6. Chat history loaded via GET /api/rooms/:slug/messages (last 100)
+7. Live cursors visible via Yjs awareness protocol
 ```
 
-### 3.4 Flow: Canvas-Anchored Comment
+### 5.3 Real-Time Drawing Collaboration
 
 ```
-Actor: Any participant
+1. User A draws → tldraw captures shape → Yjs CRDT applies locally (instant)
+2. Yjs sends binary update via WebSocket to y-websocket
+3. y-websocket broadcasts update to all other connected clients
+4. User B and C see stroke appear (<100ms on localhost; ~150ms over tunnel)
+5. y-websocket persists Yjs doc to LevelDB every 5s
 
-1. User clicks the "Comment" tool in the toolbar
-2. User clicks a point on the canvas (x: 450, y: 320)
-3. A comment input popover appears at that canvas position
-4. User types comment text and presses Enter
-5. Frontend sends chat message with type='comment', canvas_x=450, canvas_y=320
-6. Message is broadcast via WebSocket and persisted to ChatMessage table
-7. A pin icon appears at (450, 320) on all participants' canvases
-8. Clicking the pin opens a thread view showing the comment and any replies
-9. Pin is rendered as a tldraw shape (non-drawing layer) so it doesn't interfere with strokes
+Conflict: A and B draw simultaneously → Yjs CRDT merges both (no last-write-wins)
+Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates deletion
 ```
 
-### 3.5 Flow: Export Canvas
+### 5.4 Canvas-Anchored Comment
 
 ```
-Actor: Any participant
-
-1. User clicks "Export" button in toolbar
-2. Dropdown shows: [PNG] [SVG]
-3. User selects PNG
-4. Frontend renders the full canvas to an off-screen <canvas> element via tldraw's export API
-5. Client-side export generates a Blob
-6. Blob is uploaded to R2 via a presigned URL (obtained from POST /api/exports/presign)
-7. Export record is written to the Export table
-8. Browser triggers download of the file
-9. Optional: toast notification shows "Canvas exported successfully"
+1. User selects "Comment" tool → clicks canvas at (450, 320)
+2. Comment popover appears at that canvas position
+3. User types and submits → Frontend sends:
+   { type: 'comment', canvas_x: 450, canvas_y: 320, content: '...' }
+4. y-websocket broadcasts to room; Hono API persists to ChatMessage table (async)
+5. Pin rendered as a tldraw shape at (450, 320) on all clients
+6. Clicking pin opens thread view in chat panel
 ```
 
-### 3.6 Flow: Room Expiry & Cleanup
+### 5.5 Export Canvas
 
 ```
-Actor: System (background job)
+1. User clicks "Export" → selects PNG or SVG
+2. tldraw exportToBlob / getSvgString generates Blob client-side
+3. Blob POSTed to POST /api/exports
+4. Hono API writes file to local EXPORT_DIR volume, creates Export record
+5. API returns { id, downloadUrl }
+6. Browser triggers file download via GET /api/exports/:id/download
+```
 
-1. Cron job runs daily at 03:00 UTC (Cloudflare Workers Cron Trigger)
+### 5.6 Room Expiry & Cleanup
+
+```
+1. node-cron job runs daily at 03:00 local time (inside Hono process)
 2. Queries: SELECT slug FROM rooms WHERE expires_at < now() AND is_persistent = false
 3. For each expired room:
-   a. Delete PartyKit room state (DELETE /parties/main/:roomId)
-   b. Delete associated ChatMessages
-   c. Delete associated Exports from R2
-   d. Mark room status = 'deleted' (soft delete for 30-day recovery window)
-4. Log cleanup summary to monitoring
+   a. Remove Yjs document from LevelDB
+   b. Delete ChatMessages from PostgreSQL
+   c. Delete export files from local EXPORT_DIR volume
+   d. Mark room status = 'deleted' (soft delete, 30-day recovery window)
+4. Log summary to stdout (visible via `docker compose logs api`)
 ```
 
 ---
 
-## 4. MVP Implementation Plan
+## 6. MVP Implementation Plan
 
-### 4.1 MVP Scope Definition
-
-The MVP includes **Features 1–8** from the design document:
+### 6.1 MVP Scope
 
 | # | Feature | Complexity | Priority |
 |---|---|---|---|
@@ -317,71 +533,64 @@ The MVP includes **Features 1–8** from the design document:
 | 7 | Export Canvas (PNG/SVG) | Medium | P1 |
 | 8 | Persistent Rooms (7 days) | Medium | P0 |
 
-### 4.2 Phased Implementation
+### 6.2 Phased Implementation
 
-#### [DONE] Phase 0: Project Scaffolding (Days 1–2)
+#### Phase 0: Project Scaffolding (Days 1–2)
 
-**Goal:** Repo setup, tooling, deploy pipeline.
+**Goal:** Repo, tooling, all local services running with `docker compose up`.
 
 - [x] Initialize monorepo with `pnpm` workspaces
-  - `packages/web` — React + Vite frontend
-  - `packages/party` — PartyKit server
-  - `packages/shared` — Shared types and constants
-- [x] Configure TypeScript, ESLint, Prettier
-- [x] Set up Tailwind CSS in frontend
-- [ ] Create GitHub repo with branch protection on `main` *(requires GitHub account — infra step)*
-- [x] GitHub Actions: lint + type-check on PR, deploy on merge to `main`
-- [ ] Deploy empty frontend to Cloudflare Pages *(requires CF account — infra step)*
-- [ ] Deploy empty PartyKit server *(requires PartyKit account — infra step)*
-- [ ] Provision Supabase project *(requires Supabase account — infra step)*
-- [x] Run initial database migration (Room, Participant, ChatMessage, Export tables — SQL files in supabase/migrations/)
+  - `packages/web` — React + Vite frontend ✅
+  - `packages/api` — Hono REST server (Node.js) ⬚
+  - `packages/yws` — y-websocket wrapper with LevelDB + Redis ⬚
+  - `packages/shared` — Shared types and constants ✅
+- [x] Configure TypeScript, ESLint, Prettier across all packages
+- [x] Set up Tailwind CSS v4 in `packages/web`
+- [ ] Remove legacy scaffolding (`packages/party`, `supabase/`) from old plan
+- [ ] Create `packages/api` — Hono REST server (Node.js)
+- [ ] Create `packages/yws` — y-websocket wrapper with LevelDB + Redis
+- [ ] Write `docker-compose.yml` (PostgreSQL, Redis, y-websocket, API)
+- [ ] Run `docker compose up -d` — verify all containers healthy
+- [ ] Write and run initial SQL migrations (Room, Participant tables)
+- [ ] Verify WebSocket connectivity: browser → `ws://localhost:1234` → y-websocket ping
+- [ ] GitHub Actions: lint + type-check on PR
 
-**Deliverable:** Monorepo scaffolded. All packages type-check clean. 45 tests pass. CI/CD + deploy workflows defined. DB migration SQL ready.
+**Deliverable:** `docker compose up && pnpm --filter web dev` starts the full stack. WebSocket connects. Migrations applied.
 
 ---
 
 #### Phase 1: Core Canvas + Real-Time Sync (Days 3–7)
 
-**Goal:** Two users can draw on the same canvas in real time.
+**Goal:** Two browser tabs draw on the same canvas in real time via local y-websocket.
 
-- [ ] Integrate tldraw React component into frontend
+- [ ] Integrate tldraw React component into `packages/web`
 - [ ] Configure tldraw with custom toolbar (pen, shapes, text, eraser, color picker)
-- [ ] Set up Yjs document in PartyKit server (`y-partykit` provider)
-- [ ] Connect frontend Yjs provider to PartyKit WebSocket
+- [ ] Set up Yjs document in `packages/yws` (y-websocket with LevelDB persistence)
+- [ ] Connect frontend Yjs provider (`y-websocket` client) to local WS server
 - [ ] Verify: two browser tabs sync drawing strokes in real time
-- [ ] Implement Yjs awareness protocol for live cursors
-  - Display cursor position + name tag for each participant
-  - Assign unique colors per participant
-- [ ] Implement infinite canvas (pan, zoom — tldraw built-in)
-- [ ] Undo/redo verification (tldraw built-in, per-user)
-- [ ] PartyKit persistence: Yjs document auto-saved to Durable Object storage
+- [ ] Implement Yjs awareness for live cursors (position + name tag + color)
+- [ ] Infinite canvas: pan/zoom (tldraw built-in)
+- [ ] Undo/redo (tldraw built-in, per-user)
+- [ ] Confirm Yjs LevelDB persistence: restart y-websocket container, verify strokes reload
 
-**Deliverable:** Real-time collaborative drawing with live cursors works between multiple clients.
+**Deliverable:** Real-time collaborative drawing with live cursors between multiple local clients.
 
 ---
 
 #### Phase 2: Room Management (Days 8–10)
 
-**Goal:** Rooms can be created, joined via URL, and persist for 7 days.
+**Goal:** Rooms can be created, joined via URL, and persist in local PostgreSQL.
 
-- [ ] Room creation API: `POST /api/rooms` → generates slug, creates DB record
-- [ ] Slug generation: use `human-id` library (e.g., `cheerful-panda-491`)
-- [ ] Landing page UI:
-  - "Create a Room" button
-  - "Join with Code" input field
-  - Brief hero section explaining the product
-- [ ] Room join page: `/r/:slug`
-  - Display name modal (if no existing session)
-  - Session token generation and localStorage persistence
-  - Reconnection logic (if session token exists, rejoin with same identity)
-- [ ] Participant tracking:
-  - Create Participant record on join
-  - Update `last_seen_at` on heartbeat (every 30s)
-  - Broadcast participant list changes to room
-- [ ] Room `last_active_at` update on any drawing or chat activity
-- [ ] Participant presence indicator (green dot = online, gray = away >2min)
+- [ ] Room creation: `POST /api/rooms` in Hono → generates slug → inserts Room row
+- [ ] Slug generation: `human-id` library (e.g., `cheerful-panda-491`)
+- [ ] Landing page: "Create a Room" + "Join with Code" input
+- [ ] Room page `/r/:slug`: display name modal, session token, localStorage persistence
+- [ ] Reconnection: if session token in localStorage, auto-rejoin with same identity
+- [ ] Participant tracking: create on join, heartbeat every 30s, broadcast list changes
+- [ ] Update `last_active_at` on drawing and chat activity
+- [ ] Presence indicator (green = online, gray = away >2min)
 
-**Deliverable:** Full room lifecycle works. Users can create, share, join, and rejoin rooms.
+**Deliverable:** Full room lifecycle works locally. Users can create, share (local URL or tunnel URL), join, and rejoin rooms.
 
 ---
 
@@ -390,127 +599,96 @@ The MVP includes **Features 1–8** from the design document:
 **Goal:** Chat panel with real-time messaging alongside the canvas.
 
 - [ ] Chat panel UI (right sidebar, collapsible):
-  - Message list with display name, color indicator, timestamp
-  - Text input with Enter-to-send
-  - Emoji picker (use `emoji-mart` library, lightweight)
-  - Auto-scroll to latest message
-  - "X is typing..." indicator (via Yjs awareness)
-- [ ] Chat message transport via PartyKit (same WebSocket as canvas):
+  - Message list with name, color indicator, timestamp
+  - Enter-to-send text input
+  - Emoji picker (`emoji-mart`, lazy-loaded)
+  - Auto-scroll; "X is typing..." via Yjs awareness
+- [ ] Chat transport via y-websocket (same WS connection as canvas):
   - `CHAT_SEND` event from client
-  - PartyKit broadcasts to all room participants
-  - PartyKit persists message to Supabase (async, non-blocking)
-- [ ] Chat history on join:
-  - Load last 100 messages via REST: `GET /api/rooms/:slug/messages`
-  - Paginate older messages on scroll-up
-- [ ] Canvas-anchored comments:
-  - "Comment" tool in toolbar
-  - Click canvas → position captured → comment input appears
-  - Comment saved as ChatMessage with `type='comment'` + coordinates
-  - Pin rendered on canvas (tldraw bookmark shape)
-  - Click pin → shows comment thread in chat panel (filtered view)
-- [ ] System messages:
-  - "[User] joined the room"
-  - "[User] left the room"
+  - y-websocket broadcasts to room; Hono API persists to PostgreSQL (async, non-blocking)
+- [ ] Chat history on join: `GET /api/rooms/:slug/messages` (last 100, paginated)
+- [ ] Canvas-anchored comments: Comment tool → click → capture position → pin rendered on canvas → thread in chat panel
+- [ ] System messages: join/leave events
 
-**Deliverable:** Chat and canvas-anchored comments work in real time alongside drawing.
+**Deliverable:** Chat and canvas-anchored comments work in real time locally.
 
 ---
 
 #### Phase 4: Export & Polish (Days 15–18)
 
-**Goal:** Canvas export, UI polish, and production readiness.
+**Goal:** Canvas export to local filesystem, UI polish, stability.
 
-- [ ] Export functionality:
-  - PNG export via tldraw's `exportToBlob` API
-  - SVG export via tldraw's `getSvgString` API
-  - Client-side export (no server rendering needed)
-  - Optional: upload to R2 for shareable link
-  - Download triggers immediately via `<a download>` pattern
-- [ ] Room cleanup job:
-  - Cloudflare Workers Cron Trigger (daily)
-  - Delete expired rooms, cascade to messages and exports
-- [ ] UI polish:
-  - Responsive layout (canvas full-width on mobile, chat as bottom sheet)
-  - Dark mode support (Tailwind `dark:` classes)
-  - Loading states and skeleton screens
-  - Error boundaries and reconnection UI
-  - Toast notifications (room created, export complete, connection lost)
-- [ ] Performance optimization:
-  - Lazy load emoji picker
-  - Debounce Yjs persistence (5s interval)
-  - Canvas rendering optimization (tldraw handles most of this)
-- [ ] Set up Sentry for error tracking (source maps uploaded in CI)
-- [ ] Set up PostHog for basic analytics events:
-  - `room_created`, `room_joined`, `message_sent`, `canvas_exported`
-- [ ] Security:
-  - Rate limiting on room creation (10/hour per IP)
-  - Message length validation (max 2,000 chars)
-  - Slug collision prevention (retry with new slug)
-  - CSP headers on frontend
+- [ ] PNG export via tldraw `exportToBlob` → `POST /api/exports` → write to volume
+- [ ] SVG export via tldraw `getSvgString` → same pipeline
+- [ ] `GET /api/exports/:id/download` — streams file from local volume to browser
+- [ ] Room cleanup cron: `node-cron` inside Hono, runs daily at 03:00
+- [ ] UI polish: responsive layout, dark mode (`dark:` classes), loading states, error boundaries, toast notifications
+- [ ] Performance: lazy-load emoji picker, 5s Yjs persistence debounce
+- [ ] Security: rate limiting on room creation (10/hour per IP), message length validation (max 2,000 chars), input sanitization, CSP headers
 
-**Deliverable:** Production-ready MVP with export, monitoring, and analytics.
+**Deliverable:** Export works end-to-end. App is stable for daily local use.
 
 ---
 
-#### Phase 5: Testing & Launch (Days 19–21)
+#### Phase 5: External Exposure & Integration Testing (Days 19–21)
 
-- [ ] Integration tests:
-  - Room creation and join flow (Playwright)
-  - Two-user drawing sync (Playwright multi-page)
-  - Chat send and receive
+**Goal:** Validate app works from external clients; integration and load tests pass.
+
+- [ ] Stand up Addy (`addy up`) — verify HTTPS on all local domains
+- [ ] Test from a second device on the same LAN via Addy URLs
+- [ ] Stand up Cloudflare Tunnel for internet-accessible URLs; verify WS upgrade over tunnel
+- [ ] Update `.env.local` to public URLs; confirm remote clients can draw and chat
+- [ ] Integration tests (Playwright):
+  - Room creation and join flow
+  - Two-tab drawing sync
+  - Chat send/receive
   - Export download
-- [ ] Load testing:
-  - Simulate 50 concurrent users in one room (k6 or Artillery)
-  - Measure WebSocket message latency (target <100ms P95)
-  - Measure room load time (target <2s)
-- [ ] Landing page final copy and social meta tags (OG image, Twitter card)
-- [ ] Launch checklist:
-  - [ ] Custom domain configured (drawroom.app)
-  - [ ] SSL certificate active
-  - [ ] Sentry alerts configured
-  - [ ] PostHog dashboards created
-  - [ ] Backup strategy for Supabase (automatic daily backups)
-  - [ ] Status page (Openstatus or similar)
+- [ ] Load test (k6): 20 concurrent users in one local room
+  - Target: WebSocket message latency <100ms P95 on localhost; <200ms over tunnel
+  - Target: Room load time <2s
 
-**Deliverable:** DrawRoom MVP is live and publicly accessible.
+**Deliverable:** DrawRoom is fully functional locally and accessible externally.
 
 ---
 
-### 4.3 Post-MVP Roadmap (Phases 2–3 from Design Doc)
+### 6.3 Post-MVP Roadmap
 
-| Phase | Features | Estimated Timeline |
+| Phase | Features | Notes |
 |---|---|---|
-| **Post-MVP A** (Month 2) | Sticky notes, image upload (R2), room templates | 2 weeks |
-| **Post-MVP B** (Month 2–3) | User accounts (Supabase Auth), permanent room persistence, room roles (host/viewer) | 3 weeks |
-| **Post-MVP C** (Month 3–4) | Voice chat (WebRTC via LiveKit or Daily.co), room password protection | 3 weeks |
-| **Post-MVP D** (Month 4–6) | Team workspaces, Slack integration, educator analytics, billing (Stripe) | 6 weeks |
+| **Cloud Migration** | Swap y-websocket → PartyKit, local PG → Supabase, local FS → R2 | No frontend changes needed; env vars only |
+| **Post-MVP A** | Sticky notes, image upload, room templates | |
+| **Post-MVP B** | User accounts (Supabase Auth), permanent persistence, room roles | |
+| **Post-MVP C** | Voice chat (WebRTC via LiveKit), room password protection | |
+| **Post-MVP D** | Team workspaces, Slack integration, educator analytics, billing (Stripe) | |
 
-### 4.4 Key Technical Risks & Mitigations
+### 6.4 Key Risks & Mitigations (Local Dev Context)
 
 | Risk | Impact | Likelihood | Mitigation |
 |---|---|---|---|
-| **PartyKit scaling limits** | High | Low | PartyKit runs on Cloudflare; designed for millions of connections. Fallback: migrate to self-hosted y-websocket on Fly.io. |
-| **Yjs document grows unbounded** | Medium | Medium | Implement periodic Yjs `gc` (garbage collection). Compact document on room hibernation. Set max document size (5MB) and warn users. |
-| **Canvas performance with many objects** | Medium | Medium | tldraw handles culling (only renders visible shapes). Add shape count warning at 5,000 objects. Implement "flatten" option to merge older strokes. |
-| **Chat message volume in large rooms** | Low | Low | Paginate aggressively. Only load last 100 on join. Archive messages older than 7 days with the room. |
-| **WebSocket disconnection/reconnection** | Medium | High | Yjs handles reconnection natively (syncs missed updates). Add exponential backoff. Show "Reconnecting..." banner in UI. |
+| **y-websocket single-process bottleneck** | Low for local dev | Low | Acceptable during dev. Production uses PartyKit. |
+| **Yjs document grows unbounded** | Medium | Medium | Periodic `Y.gc` garbage collection; warn at 5MB. |
+| **Canvas perf with many objects** | Medium | Medium | tldraw handles culling; warn at 5,000 objects. |
+| **Tunnel latency skews perf expectations** | Low | High | Always benchmark primary flows on `localhost`; use tunnel only for external access scenarios. |
+| **Docker volume data loss** | High | Low | Named volumes survive restarts. Run `docker compose down` (not `down -v`) to preserve data. |
+| **WebSocket disconnection** | Medium | High | Yjs reconnects natively (syncs missed updates). Add exponential backoff and "Reconnecting..." banner. |
 
-### 4.5 API Surface (MVP)
+### 6.5 API Surface (MVP)
 
 ```
-REST Endpoints (Hono on PartyKit or Cloudflare Workers)
-────────────────────────────────────────────────────────
+REST Endpoints (Hono — localhost:3000)
+──────────────────────────────────────────────────────
 
 POST   /api/rooms                    → Create room, returns { slug, roomUrl }
 GET    /api/rooms/:slug              → Room metadata (title, participant count, created_at)
 PATCH  /api/rooms/:slug              → Update room title
 GET    /api/rooms/:slug/messages     → Chat history (paginated, ?cursor=&limit=50)
-POST   /api/rooms/:slug/messages     → Send message (fallback if WebSocket unavailable)
-POST   /api/exports/presign          → Get presigned R2 upload URL for export
+POST   /api/rooms/:slug/messages     → Send message (WebSocket fallback)
+POST   /api/exports                  → Save export file, returns { id, downloadUrl }
+GET    /api/exports/:id/download     → Stream export file from local volume
 GET    /api/health                   → Health check
 
-WebSocket Events (PartyKit)
-────────────────────────────────────────────────────────
+WebSocket Events (y-websocket — localhost:1234)
+──────────────────────────────────────────────────────
 
 Client → Server:
   JOIN           { displayName, sessionToken }
@@ -526,12 +704,12 @@ Server → Client:
   CHAT_HISTORY          { messages[], hasMore }
   ERROR                 { code, message }
 
-Yjs Sync (handled by y-partykit, separate from app events):
+Yjs Sync (y-websocket protocol, separate from app events):
   Yjs document updates    (binary, automatic)
-  Yjs awareness updates   (cursor positions, user state)
+  Yjs awareness updates   (cursor positions, typing state)
 ```
 
-### 4.6 Project Structure
+### 6.6 Project Structure
 
 ```
 drawroom/
@@ -543,14 +721,14 @@ drawroom/
 │   │   │   │   ├── Chat/             # ChatPanel, MessageList, CommentPin
 │   │   │   │   ├── Room/             # RoomLayout, ParticipantList, Toolbar
 │   │   │   │   ├── Landing/          # LandingPage, CreateRoomButton
-│   │   │   │   └── ui/               # Shared UI primitives (Button, Modal, Toast)
+│   │   │   │   └── ui/               # Button, Modal, Toast primitives
 │   │   │   ├── hooks/
-│   │   │   │   ├── useYjsProvider.ts     # Yjs + PartyKit connection
+│   │   │   │   ├── useYjsProvider.ts     # Yjs + y-websocket connection
 │   │   │   │   ├── useRoom.ts            # Room state and participant management
 │   │   │   │   ├── useChat.ts            # Chat messages and sending
 │   │   │   │   └── useExport.ts          # Canvas export logic
 │   │   │   ├── stores/
-│   │   │   │   └── uiStore.ts            # Zustand store for UI state
+│   │   │   │   └── uiStore.ts            # Zustand: tool selection, panel state
 │   │   │   ├── lib/
 │   │   │   │   ├── api.ts                # REST API client
 │   │   │   │   ├── colors.ts             # Participant color assignment
@@ -560,19 +738,33 @@ drawroom/
 │   │   │   │   └── RoomPage.tsx
 │   │   │   ├── App.tsx
 │   │   │   └── main.tsx
-│   │   ├── public/
 │   │   ├── index.html
 │   │   ├── tailwind.config.ts
 │   │   ├── vite.config.ts
 │   │   └── package.json
 │   │
-│   ├── party/                        # PartyKit server
+│   ├── api/                          # Hono REST server
 │   │   ├── src/
-│   │   │   ├── room.ts               # Main PartyKit server (WebSocket handler)
-│   │   │   ├── chat.ts               # Chat message handling and persistence
-│   │   │   ├── participants.ts       # Participant management
-│   │   │   └── api.ts                # Hono REST routes (mounted on PartyKit)
-│   │   ├── partykit.json
+│   │   │   ├── index.ts              # Server entry point
+│   │   │   ├── routes/
+│   │   │   │   ├── rooms.ts          # Room CRUD
+│   │   │   │   ├── messages.ts       # Chat history
+│   │   │   │   └── exports.ts        # Export upload/download
+│   │   │   ├── db/
+│   │   │   │   ├── client.ts         # PostgreSQL connection
+│   │   │   │   └── queries.ts        # SQL query functions
+│   │   │   ├── jobs/
+│   │   │   │   └── cleanup.ts        # node-cron room expiry job
+│   │   │   └── lib/
+│   │   │       ├── slugs.ts          # Slug generation (human-id)
+│   │   │       └── redis.ts          # Redis client
+│   │   ├── Dockerfile
+│   │   └── package.json
+│   │
+│   ├── yws/                          # y-websocket server wrapper
+│   │   ├── src/
+│   │   │   └── index.ts              # y-websocket with LevelDB + Redis pub-sub
+│   │   ├── Dockerfile
 │   │   └── package.json
 │   │
 │   └── shared/                       # Shared types and constants
@@ -582,12 +774,11 @@ drawroom/
 │       │   └── constants.ts          # Limits, defaults, enums
 │       └── package.json
 │
-├── supabase/
-│   └── migrations/                   # SQL migration files
-│       ├── 001_create_rooms.sql
-│       ├── 002_create_participants.sql
-│       ├── 003_create_chat_messages.sql
-│       └── 004_create_exports.sql
+├── migrations/                       # SQL migration files (psql-compatible, mounted into PG)
+│   ├── 001_create_rooms.sql
+│   ├── 002_create_participants.sql
+│   ├── 003_create_chat_messages.sql
+│   └── 004_create_exports.sql
 │
 ├── e2e/                              # Playwright tests
 │   ├── room-creation.spec.ts
@@ -596,9 +787,10 @@ drawroom/
 │
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                    # Lint, type-check, test
-│       └── deploy.yml                # Deploy to Cloudflare + PartyKit
+│       └── ci.yml                    # Lint, type-check, test on PR
 │
+├── docker-compose.yml                # Local service orchestration
+├── addy.yml                          # Addy reverse proxy config
 ├── pnpm-workspace.yaml
 ├── package.json
 ├── tsconfig.base.json
@@ -607,4 +799,4 @@ drawroom/
 
 ---
 
-*This technical plan targets a 3-week MVP timeline for a solo developer or small team (1–2 engineers). The PartyKit + tldraw + Yjs combination is specifically chosen to minimize custom infrastructure and maximize iteration speed on the product experience.*
+*This plan targets a 3-week MVP timeline for a solo developer. The local dev stack (y-websocket + PostgreSQL + Redis in Docker) mirrors the production architecture structurally, so the eventual cloud migration is an environment variable swap — not a rewrite.*
