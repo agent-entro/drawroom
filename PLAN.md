@@ -563,15 +563,15 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 
 **Goal:** Two browser tabs draw on the same canvas in real time via local y-websocket.
 
-- [ ] Integrate tldraw React component into `packages/web`
-- [ ] Configure tldraw with custom toolbar (pen, shapes, text, eraser, color picker)
-- [ ] Set up Yjs document in `packages/yws` (y-websocket with LevelDB persistence)
-- [ ] Connect frontend Yjs provider (`y-websocket` client) to local WS server
-- [ ] Verify: two browser tabs sync drawing strokes in real time
-- [ ] Implement Yjs awareness for live cursors (position + name tag + color)
-- [ ] Infinite canvas: pan/zoom (tldraw built-in)
-- [ ] Undo/redo (tldraw built-in, per-user)
-- [ ] Confirm Yjs LevelDB persistence: restart y-websocket container, verify strokes reload
+- [x] Integrate tldraw React component into `packages/web`
+- [x] Configure tldraw with custom toolbar (pen, shapes, text, eraser, color picker)
+- [x] Set up Yjs document in `packages/yws` (y-websocket with LevelDB persistence)
+- [x] Connect frontend Yjs provider (`y-websocket` client) to local WS server
+- [x] Verify: two browser tabs sync drawing strokes in real time
+- [x] Implement Yjs awareness for live cursors (position + name tag + color)
+- [x] Infinite canvas: pan/zoom (tldraw built-in)
+- [x] Undo/redo (tldraw built-in, per-user)
+- [x] Confirm Yjs LevelDB persistence: restart y-websocket container, verify strokes reload
 
 **Deliverable:** Real-time collaborative drawing with live cursors between multiple local clients.
 
