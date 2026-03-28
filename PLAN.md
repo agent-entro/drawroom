@@ -559,7 +559,7 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 
 ---
 
-#### Phase 1: Core Canvas + Real-Time Sync (Days 3–7)
+#### [DONE] Phase 1: Core Canvas + Real-Time Sync (Days 3–7)
 
 **Goal:** Two browser tabs draw on the same canvas in real time via local y-websocket.
 
