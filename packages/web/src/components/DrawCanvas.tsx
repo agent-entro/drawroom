@@ -89,6 +89,12 @@ interface DrawCanvasProps {
   participantId?: string;
   /** Called whenever the Yjs WebSocket connection status changes */
   onStatusChange?: (status: ConnectionStatus) => void;
+  /**
+   * Called whenever any peer's Yjs awareness changes (join/leave/cursor).
+   * Lets the parent refresh the participant list immediately without waiting
+   * for the next poll tick.
+   */
+  onParticipantsRefresh?: () => void;
 }
 
 export default function DrawCanvas({
@@ -98,6 +104,7 @@ export default function DrawCanvas({
   userColor: userColorProp,
   participantId,
   onStatusChange,
+  onParticipantsRefresh,
 }: DrawCanvasProps) {
   const userId = getUserId();
   const userName = userNameProp ?? getUserName();
@@ -107,7 +114,10 @@ export default function DrawCanvas({
   const {
     strokes, addStroke, deleteStroke, clearAll,
     setMyCursor, remoteCursors, status, undo, redo,
-  } = useYjsCanvas({ roomSlug, wsUrl, userId, userName, userColor, participantId });
+  } = useYjsCanvas({
+    roomSlug, wsUrl, userId, userName, userColor, participantId,
+    onAwarenessChange: onParticipantsRefresh,
+  });
 
   // Notify parent of WS status changes (used to pause HTTP heartbeat polling)
   useEffect(() => {

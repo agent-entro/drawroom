@@ -32,12 +32,12 @@ export default function ParticipantList({ participants, currentParticipantId }: 
               {p.displayName.charAt(0).toUpperCase()}
             </div>
 
-            {/* Presence dot */}
+            {/* Presence dot — decorative; status already announced by parent aria-label */}
             <span
+              aria-hidden="true"
               className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${
                 online ? 'bg-green-500' : 'bg-gray-400'
               }`}
-              aria-label={online ? 'online' : 'away'}
             />
           </div>
         );

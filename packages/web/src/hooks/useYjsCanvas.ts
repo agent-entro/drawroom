@@ -183,6 +183,9 @@ export function useYjsCanvas({
         });
       });
       setRemoteCursors(cursors);
+      // Notify caller so they can refresh the REST participant list immediately
+      // rather than waiting for the next polling tick.
+      onAwarenessChangeRef.current?.();
     };
     provider.awareness.on('change', syncAwareness);
 

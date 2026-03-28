@@ -13,13 +13,6 @@ export interface UseRoomResult {
   error: string | null;
   joinWithName: (displayName: string) => Promise<void>;
   refreshParticipants: () => Promise<void>;
-  /**
-   * Signal from the canvas layer. When wsConnected=true the Yjs WebSocket
-   * is online and the YWS server drives DB heartbeats via awareness, so
-   * this hook skips the redundant HTTP heartbeat call (keeps participant-list
-   * refresh only). Falls back to full polling when WS goes offline.
-   */
-  notifyWsConnected: (wsConnected: boolean) => void;
 }
 
 export function useRoom(roomSlug: string): UseRoomResult {
@@ -29,12 +22,6 @@ export function useRoom(roomSlug: string): UseRoomResult {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Tracks whether the Yjs WebSocket is online so we can skip HTTP heartbeat
-  const wsConnectedRef = useRef(false);
-
-  const notifyWsConnected = useCallback((connected: boolean) => {
-    wsConnectedRef.current = connected;
-  }, []);
 
   const refreshParticipants = useCallback(async () => {
     try {
@@ -49,14 +36,14 @@ export function useRoom(roomSlug: string): UseRoomResult {
     (p: Participant) => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = setInterval(async () => {
-        const tasks: Promise<unknown>[] = [refreshParticipants()];
-        // Skip HTTP heartbeat when the Yjs WebSocket is connected — the YWS
-        // server drives DB presence via awareness in that case. Keep it as
-        // fallback when the WebSocket is offline.
-        if (!wsConnectedRef.current) {
-          tasks.push(heartbeat(roomSlug, p.id, p.sessionToken));
-        }
-        await Promise.allSettled(tasks);
+        // Always send HTTP heartbeat to keep last_seen_at fresh in the DB.
+        // Participant-list refresh is also event-driven via Yjs awareness in
+        // DrawCanvas (onAwarenessChange → refreshParticipants), so this poll
+        // acts as a fallback catch-all rather than the primary update path.
+        await Promise.allSettled([
+          heartbeat(roomSlug, p.id, p.sessionToken),
+          refreshParticipants(),
+        ]);
       }, HEARTBEAT_INTERVAL_MS);
     },
     [roomSlug, refreshParticipants],
@@ -133,5 +120,5 @@ export function useRoom(roomSlug: string): UseRoomResult {
     };
   }, [roomSlug, handleJoined]);
 
-  return { participant, participants, needsDisplayName, isLoading, error, joinWithName, refreshParticipants, notifyWsConnected };
+  return { participant, participants, needsDisplayName, isLoading, error, joinWithName, refreshParticipants };
 }

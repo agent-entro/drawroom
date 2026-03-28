@@ -2,12 +2,11 @@
  * Room page — plain Canvas drawing board with real-time Yjs sync.
  * Chat panel is a placeholder until Phase 3.
  */
-import { Suspense, lazy, useCallback } from 'react';
+import { Suspense, lazy } from 'react';
 import { useParams } from 'react-router-dom';
 import { useRoom } from '../hooks/useRoom.ts';
 import DisplayNameModal from '../components/DisplayNameModal.tsx';
 import ParticipantList from '../components/ParticipantList.tsx';
-import type { ConnectionStatus } from '../hooks/useYjsCanvas.ts';
 
 // Code-split the canvas bundle
 const DrawCanvas = lazy(() => import('../components/DrawCanvas.tsx'));
@@ -20,13 +19,8 @@ export default function RoomPage() {
 
   const {
     participant, participants, needsDisplayName, isLoading, error,
-    joinWithName, notifyWsConnected,
+    joinWithName, refreshParticipants,
   } = useRoom(roomSlug);
-
-  const handleCanvasStatusChange = useCallback(
-    (status: ConnectionStatus) => notifyWsConnected(status === 'online'),
-    [notifyWsConnected],
-  );
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -67,6 +61,7 @@ export default function RoomPage() {
           onClick={() => void navigator.clipboard.writeText(window.location.href)}
           className="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors"
           title="Copy room link to clipboard"
+          aria-label="Copy room link to clipboard"
         >
           Share
         </button>
@@ -89,7 +84,7 @@ export default function RoomPage() {
               userName={participant?.displayName}
               userColor={participant?.color}
               participantId={participant?.id}
-              onStatusChange={handleCanvasStatusChange}
+              onParticipantsRefresh={refreshParticipants}
             />
           </Suspense>
         </section>
