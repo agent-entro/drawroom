@@ -196,6 +196,97 @@ describe('Y.UndoManager with local origin', () => {
   });
 });
 
+// ── Awareness active stroke ───────────────────────────────────────────────────
+
+describe('Awareness active stroke', () => {
+  it('active stroke appears in awareness state and is visible to other clients', () => {
+    // Simulate two awareness instances sharing state via a simple in-memory relay
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+
+    // Wire up Y.Doc sync
+    docA.on('update', (u: Uint8Array) => Y.applyUpdate(docB, u));
+    docB.on('update', (u: Uint8Array) => Y.applyUpdate(docA, u));
+
+    // Create awareness instances using the awareness protocol directly
+    const { Awareness } = require('y-protocols/awareness');
+    const awarenessA = new Awareness(docA);
+    const awarenessB = new Awareness(docB);
+
+    // Relay awareness updates between A and B
+    const { encodeAwarenessUpdate, applyAwarenessUpdate } = require('y-protocols/awareness');
+    awarenessA.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
+      const changedClients = added.concat(updated).concat(removed);
+      const update = encodeAwarenessUpdate(awarenessA, changedClients);
+      applyAwarenessUpdate(awarenessB, update, null);
+    });
+    awarenessB.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => {
+      const changedClients = added.concat(updated).concat(removed);
+      const update = encodeAwarenessUpdate(awarenessB, changedClients);
+      applyAwarenessUpdate(awarenessA, update, null);
+    });
+
+    const activeStroke: import('../useYjsCanvas.ts').Stroke = {
+      id: 'active-1',
+      tool: 'pen',
+      color: '#ff0000',
+      lineWidth: 4,
+      userId: 'userA',
+      points: [{ x: 0, y: 0 }, { x: 50, y: 50 }],
+      complete: false,
+    };
+
+    // User A sets their active stroke in awareness
+    awarenessA.setLocalStateField('user', {
+      userId: 'userA',
+      userName: 'Alice',
+      userColor: '#ff0000',
+      cursor: { x: 50, y: 50 },
+      activeStroke,
+    });
+
+    // User B should now see user A's active stroke in awareness states
+    const statesOnB = awarenessB.getStates() as Map<number, { user?: { activeStroke?: import('../useYjsCanvas.ts').Stroke } }>;
+
+    let foundActiveStroke: import('../useYjsCanvas.ts').Stroke | undefined;
+    statesOnB.forEach((state, clientId) => {
+      if (clientId !== awarenessB.clientID && state.user?.activeStroke) {
+        foundActiveStroke = state.user.activeStroke;
+      }
+    });
+
+    expect(foundActiveStroke).toBeDefined();
+    expect(foundActiveStroke!.id).toBe('active-1');
+    expect(foundActiveStroke!.complete).toBe(false);
+    expect(foundActiveStroke!.points).toHaveLength(2);
+
+    // User A clears active stroke (stroke complete / pointer up)
+    awarenessA.setLocalStateField('user', {
+      userId: 'userA',
+      userName: 'Alice',
+      userColor: '#ff0000',
+      cursor: { x: 50, y: 50 },
+      activeStroke: null,
+    });
+
+    // User B should now see no active stroke for user A
+    const statesAfterClear = awarenessB.getStates() as Map<number, { user?: { activeStroke?: import('../useYjsCanvas.ts').Stroke | null } }>;
+    let clearedActiveStroke: import('../useYjsCanvas.ts').Stroke | null | undefined = undefined;
+    statesAfterClear.forEach((state, clientId) => {
+      if (clientId !== awarenessB.clientID) {
+        clearedActiveStroke = state.user?.activeStroke;
+      }
+    });
+
+    expect(clearedActiveStroke).toBeNull();
+
+    awarenessA.destroy();
+    awarenessB.destroy();
+    docA.destroy();
+    docB.destroy();
+  });
+});
+
 // ── Stroke shape validation ───────────────────────────────────────────────────
 
 describe('Stroke data shape', () => {

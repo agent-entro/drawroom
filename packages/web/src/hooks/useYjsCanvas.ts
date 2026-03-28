@@ -5,10 +5,12 @@
  * Data model:
  *   Y.Map<Stroke>('strokes')  — all committed strokes, keyed by stroke.id
  *   Awareness                 — remote cursor positions + user metadata
+ *                             — active in-progress stroke for real-time sync
  *
  * Design decisions:
  *   - Strokes are committed only on pointerup (not streamed mid-draw).
  *     This keeps Yjs updates cheap and undo semantics clean.
+ *   - Active in-progress strokes are streamed via awareness for real-time sync.
  *   - Y.UndoManager tracks only 'local' origin transactions, so undo/redo
  *     only affects the local user's strokes.
  *   - Awareness holds cursor + user info; no separate REST polling needed
@@ -53,6 +55,8 @@ interface AwarenessUser {
   cursor: { x: number; y: number } | null;
   /** Participant DB id — used by the YWS server to drive server-side presence heartbeats */
   participantId?: string;
+  /** Active in-progress stroke for real-time drawing sync */
+  activeStroke?: Stroke | null;
 }
 
 export interface YjsCanvasOptions {
@@ -76,7 +80,9 @@ export interface YjsCanvasState {
   deleteStroke: (id: string) => void;
   clearAll: () => void;
   setMyCursor: (cursor: { x: number; y: number } | null) => void;
+  setMyActiveStroke: (stroke: Stroke | null) => void;
   remoteCursors: RemoteCursor[];
+  remoteActiveStrokes: Stroke[];
   status: ConnectionStatus;
   undo: () => void;
   redo: () => void;
@@ -97,6 +103,7 @@ export function useYjsCanvas({
 }: YjsCanvasOptions): YjsCanvasState {
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([]);
+  const [remoteActiveStrokes, setRemoteActiveStrokes] = useState<Stroke[]>([]);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
 
   // Stable refs to mutable Yjs objects — safe to call from callbacks without
@@ -170,6 +177,7 @@ export function useYjsCanvas({
     const syncAwareness = () => {
       const states = provider.awareness.getStates() as Map<number, { user?: AwarenessUser }>;
       const cursors: RemoteCursor[] = [];
+      const activeStrokes: Stroke[] = [];
       states.forEach((state, clientId) => {
         if (clientId === provider.awareness.clientID) return;
         const u = state.user;
@@ -181,8 +189,12 @@ export function useYjsCanvas({
           userColor: u.userColor ?? '#888888',
           cursor: u.cursor ?? null,
         });
+        if (u.activeStroke) {
+          activeStrokes.push(u.activeStroke);
+        }
       });
       setRemoteCursors(cursors);
+      setRemoteActiveStrokes(activeStrokes);
       // Notify caller so they can refresh the REST participant list immediately
       // rather than waiting for the next polling tick.
       onAwarenessChangeRef.current?.();
@@ -236,6 +248,13 @@ export function useYjsCanvas({
     awareness.setLocalStateField('user', myUserRef.current);
   }, []);
 
+  const setMyActiveStroke = useCallback((stroke: Stroke | null) => {
+    const awareness = awarenessRef.current;
+    if (!awareness) return;
+    myUserRef.current.activeStroke = stroke;
+    awareness.setLocalStateField('user', myUserRef.current);
+  }, []);
+
   const undo = useCallback(() => {
     undoManagerRef.current?.undo();
   }, []);
@@ -244,5 +263,10 @@ export function useYjsCanvas({
     undoManagerRef.current?.redo();
   }, []);
 
-  return { strokes, addStroke, deleteStroke, clearAll, setMyCursor, remoteCursors, status, undo, redo };
+  return {
+    strokes, addStroke, deleteStroke, clearAll,
+    setMyCursor, setMyActiveStroke,
+    remoteCursors, remoteActiveStrokes,
+    status, undo, redo,
+  };
 }

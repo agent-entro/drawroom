@@ -113,7 +113,7 @@ export default function DrawCanvas({
 
   const {
     strokes, addStroke, deleteStroke, clearAll,
-    setMyCursor, remoteCursors, status, undo, redo,
+    setMyCursor, setMyActiveStroke, remoteCursors, remoteActiveStrokes, status, undo, redo,
   } = useYjsCanvas({
     roomSlug, wsUrl, userId, userName, userColor, participantId,
     onAwarenessChange: onParticipantsRefresh,
@@ -133,6 +133,7 @@ export default function DrawCanvas({
   const isDrawingRef = useRef(false);
   const activeStrokeRef = useRef<Stroke | null>(null);
   const strokesRef = useRef<Stroke[]>(strokes);
+  const remoteActiveStrokesRef = useRef<Stroke[]>([]);
   const toolRef = useRef<Tool>('pen');
   const colorRef = useRef<string>(PRESET_COLORS[0]);
   const lineWidthRef = useRef<LineWidthOption>(LINE_WIDTHS[1]);
@@ -162,6 +163,9 @@ export default function DrawCanvas({
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     for (const stroke of strokesRef.current) {
+      renderStroke(ctx, stroke);
+    }
+    for (const stroke of remoteActiveStrokesRef.current) {
       renderStroke(ctx, stroke);
     }
     if (activeStrokeRef.current) {
@@ -196,6 +200,12 @@ export default function DrawCanvas({
     strokesRef.current = strokes;
     renderAll();
   }, [strokes, renderAll]);
+
+  // Re-render when remote active strokes change
+  useEffect(() => {
+    remoteActiveStrokesRef.current = remoteActiveStrokes;
+    renderAll();
+  }, [remoteActiveStrokes, renderAll]);
 
   // ── Pointer helpers ────────────────────────────────────────────────────────
 
@@ -258,12 +268,13 @@ export default function DrawCanvas({
           ...activeStrokeRef.current,
           points: [...activeStrokeRef.current.points, pos],
         };
+        setMyActiveStroke(activeStrokeRef.current);
         renderAll();
       } else if (toolRef.current === 'eraser') {
         eraseAt(pos);
       }
     },
-    [setMyCursor, eraseAt, renderAll],
+    [setMyCursor, setMyActiveStroke, eraseAt, renderAll],
   );
 
   const handlePointerUp = useCallback(() => {
@@ -271,13 +282,15 @@ export default function DrawCanvas({
     if (activeStrokeRef.current) {
       addStroke({ ...activeStrokeRef.current, complete: true });
       activeStrokeRef.current = null;
+      setMyActiveStroke(null);
       renderAll();
     }
-  }, [addStroke, renderAll]);
+  }, [addStroke, setMyActiveStroke, renderAll]);
 
   const handlePointerLeave = useCallback(() => {
     setMyCursor(null);
-  }, [setMyCursor]);
+    setMyActiveStroke(null);
+  }, [setMyCursor, setMyActiveStroke]);
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 
