@@ -21,15 +21,24 @@ interface DrawCanvasProps {
   roomSlug: string;
   /** y-websocket URL — defaults to ws://localhost:1234 */
   wsUrl?: string;
+  /** Override display name (from server-assigned participant). Falls back to localStorage. */
+  userName?: string;
+  /** Override color (from server-assigned participant). Falls back to random color. */
+  userColor?: string;
 }
 
 type TldrawProps = ComponentPropsWithoutRef<typeof Tldraw>;
 
-export default function DrawCanvas({ roomSlug, wsUrl = 'ws://localhost:1234' }: DrawCanvasProps) {
+export default function DrawCanvas({
+  roomSlug,
+  wsUrl = 'ws://localhost:1234',
+  userName: userNameProp,
+  userColor: userColorProp,
+}: DrawCanvasProps) {
   // Stable user identity across renders (stored in localStorage)
   const userId = getUserId();
-  const userName = getUserName();
-  const userColor = useRef(getRandomParticipantColor()).current;
+  const userName = userNameProp ?? getUserName();
+  const userColor = useRef(userColorProp ?? getRandomParticipantColor()).current;
 
   const storeWithStatus = useYjsStore({
     roomSlug,

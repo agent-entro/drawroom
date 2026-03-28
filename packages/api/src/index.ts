@@ -8,6 +8,7 @@ import { startCleanupCron } from './cron/cleanup.js';
 import health from './routes/health.js';
 import rooms from './routes/rooms.js';
 import messages from './routes/messages.js';
+import participants from './routes/participants.js';
 import exports_ from './routes/exports.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
@@ -29,6 +30,7 @@ app.route('/api/exports', exports_);
 // Mount messages under rooms — must come before rooms to avoid slug conflict
 const roomsWithMessages = new Hono();
 roomsWithMessages.route('/:slug/messages', messages);
+roomsWithMessages.route('/:slug/participants', participants);
 app.route('/api/rooms', roomsWithMessages);
 app.route('/api/rooms', rooms);
 

@@ -1,5 +1,5 @@
 // REST API client — thin wrapper around fetch, typed with shared domain types
-import type { Room, ChatMessage } from '@drawroom/shared';
+import type { Room, ChatMessage, Participant, ParticipantView } from '@drawroom/shared';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -61,6 +61,35 @@ export function getMessages(
   if (cursor) params.set('cursor', cursor);
   params.set('limit', String(limit));
   return request<GetMessagesResponse>(`/api/rooms/${encodeURIComponent(slug)}/messages?${params}`);
+}
+
+// ─── Participant endpoints ─────────────────────────────────────────────────────
+
+export interface JoinRoomRequest {
+  displayName: string;
+  sessionToken?: string;
+}
+
+export type JoinRoomResponse = Participant;
+
+export function joinRoom(slug: string, body: JoinRoomRequest): Promise<JoinRoomResponse> {
+  return request<JoinRoomResponse>(`/api/rooms/${encodeURIComponent(slug)}/participants`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function heartbeat(slug: string, participantId: string): Promise<void> {
+  return request<void>(
+    `/api/rooms/${encodeURIComponent(slug)}/participants/${encodeURIComponent(participantId)}/heartbeat`,
+    { method: 'PATCH' },
+  );
+}
+
+export function getParticipants(slug: string): Promise<{ participants: ParticipantView[] }> {
+  return request<{ participants: ParticipantView[] }>(
+    `/api/rooms/${encodeURIComponent(slug)}/participants`,
+  );
 }
 
 export { ApiError };

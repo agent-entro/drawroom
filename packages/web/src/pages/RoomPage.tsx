@@ -4,6 +4,9 @@
  */
 import { Suspense, lazy } from 'react';
 import { useParams } from 'react-router-dom';
+import { useRoom } from '../hooks/useRoom.ts';
+import DisplayNameModal from '../components/DisplayNameModal.tsx';
+import ParticipantList from '../components/ParticipantList.tsx';
 
 // Code-split the heavy tldraw bundle
 const DrawCanvas = lazy(() => import('../components/DrawCanvas.tsx'));
@@ -14,14 +17,44 @@ export default function RoomPage() {
   const { slug } = useParams<{ slug: string }>();
   const roomSlug = slug ?? 'default';
 
+  const { participant, participants, needsDisplayName, isLoading, error, joinWithName } =
+    useRoom(roomSlug);
+
   return (
     <div className="h-screen flex flex-col bg-white">
+      {/* Display name modal — shown until user has joined */}
+      {needsDisplayName && !isLoading && (
+        <DisplayNameModal onJoin={joinWithName} error={error} isLoading={isLoading} />
+      )}
+
+      {/* Loading spinner */}
+      {isLoading && !participant && !needsDisplayName && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-40">
+          <span className="text-gray-400 animate-pulse">Connecting…</span>
+        </div>
+      )}
+
+      {/* Error state (non-join errors) */}
+      {error && !needsDisplayName && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-2 shadow">
+          {error}
+        </div>
+      )}
+
       {/* Top bar */}
       <header className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-white shadow-sm z-10 relative">
         <span className="font-bold text-gray-900 text-lg">
           Draw<span className="text-blue-600">Room</span>
         </span>
-        <span className="text-sm text-gray-500 font-mono">{roomSlug}</span>
+
+        <div className="flex items-center gap-3">
+          <ParticipantList
+            participants={participants}
+            currentParticipantId={participant?.id}
+          />
+          <span className="text-sm text-gray-500 font-mono">{roomSlug}</span>
+        </div>
+
         <button
           onClick={() => void navigator.clipboard.writeText(window.location.href)}
           className="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors"
@@ -42,7 +75,12 @@ export default function RoomPage() {
               </div>
             }
           >
-            <DrawCanvas roomSlug={roomSlug} wsUrl={WS_URL} />
+            <DrawCanvas
+              roomSlug={roomSlug}
+              wsUrl={WS_URL}
+              userName={participant?.displayName}
+              userColor={participant?.color}
+            />
           </Suspense>
         </section>
 

@@ -1,15 +1,26 @@
 // Landing page — hero section with Create Room / Join Room CTAs
 import { useNavigate } from 'react-router-dom';
 import { useState } from 'react';
+import { createRoom } from '../lib/api.ts';
 
 export default function LandingPage() {
   const navigate = useNavigate();
   const [joinSlug, setJoinSlug] = useState('');
   const [joinError, setJoinError] = useState('');
+  const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
 
-  function handleCreateRoom() {
-    // Phase 0: navigate to a placeholder; real API call in Phase 2
-    navigate('/r/demo-room-001');
+  async function handleCreateRoom() {
+    setIsCreating(true);
+    setCreateError('');
+    try {
+      const { slug } = await createRoom();
+      navigate(`/r/${slug}`);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create room');
+    } finally {
+      setIsCreating(false);
+    }
   }
 
   function handleJoinRoom(e: React.FormEvent) {
@@ -39,11 +50,13 @@ export default function LandingPage() {
         {/* CTAs */}
         <div className="flex flex-col sm:flex-row gap-4 justify-center">
           <button
-            onClick={handleCreateRoom}
-            className="px-8 py-4 bg-blue-600 text-white text-lg font-semibold rounded-xl shadow hover:bg-blue-700 transition-colors focus:outline-none focus:ring-4 focus:ring-blue-300"
+            onClick={() => void handleCreateRoom()}
+            disabled={isCreating}
+            className="px-8 py-4 bg-blue-600 text-white text-lg font-semibold rounded-xl shadow hover:bg-blue-700 transition-colors focus:outline-none focus:ring-4 focus:ring-blue-300 disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Create a Room
+            {isCreating ? 'Creating…' : 'Create a Room'}
           </button>
+          {createError && <p className="text-sm text-red-500">{createError}</p>}
         </div>
 
         {/* Join with code */}

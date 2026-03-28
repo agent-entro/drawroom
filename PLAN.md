@@ -577,18 +577,18 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 
 ---
 
-#### Phase 2: Room Management (Days 8–10)
+#### [DONE] Phase 2: Room Management (Days 8–10)
 
 **Goal:** Rooms can be created, joined via URL, and persist in local PostgreSQL.
 
-- [ ] Room creation: `POST /api/rooms` in Hono → generates slug → inserts Room row
-- [ ] Slug generation: `human-id` library (e.g., `cheerful-panda-491`)
-- [ ] Landing page: "Create a Room" + "Join with Code" input
-- [ ] Room page `/r/:slug`: display name modal, session token, localStorage persistence
-- [ ] Reconnection: if session token in localStorage, auto-rejoin with same identity
-- [ ] Participant tracking: create on join, heartbeat every 30s, broadcast list changes
-- [ ] Update `last_active_at` on drawing and chat activity
-- [ ] Presence indicator (green = online, gray = away >2min)
+- [x] Room creation: `POST /api/rooms` in Hono → generates slug → inserts Room row
+- [x] Slug generation: `human-id` library (e.g., `cheerful-panda-491`)
+- [x] Landing page: "Create a Room" + "Join with Code" input
+- [x] Room page `/r/:slug`: display name modal, session token, localStorage persistence
+- [x] Reconnection: if session token in localStorage, auto-rejoin with same identity
+- [x] Participant tracking: create on join, heartbeat every 30s, broadcast list changes
+- [x] Update `last_active_at` on drawing and chat activity
+- [x] Presence indicator (green = online, gray = away >2min)
 
 **Deliverable:** Full room lifecycle works locally. Users can create, share (local URL or tunnel URL), join, and rejoin rooms.
 
