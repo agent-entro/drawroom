@@ -110,7 +110,7 @@ describe('Participants route', () => {
     expect(body.participants).toHaveLength(1);
   });
 
-  it('PATCH /:id/heartbeat → returns 204', async () => {
+  it('PATCH /:id/heartbeat with valid sessionToken → returns 204', async () => {
     const { sql } = await import('../db/client.js');
     const mockSql = vi.mocked(sql);
 
@@ -127,9 +127,23 @@ describe('Participants route', () => {
 
     const res = await app.request(`/test-room/participants/${PARTICIPANT_ID}/heartbeat`, {
       method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionToken: SESSION_TOKEN }),
     });
 
     expect(res.status).toBe(204);
+  });
+
+  it('PATCH /:id/heartbeat without sessionToken → returns 400', async () => {
+    const { default: participants } = await import('../routes/participants.js');
+    const app = new Hono();
+    app.route('/:slug/participants', participants);
+
+    const res = await app.request(`/test-room/participants/${PARTICIPANT_ID}/heartbeat`, {
+      method: 'PATCH',
+    });
+
+    expect(res.status).toBe(400);
   });
 
   it('POST / with missing displayName → returns 400', async () => {

@@ -128,6 +128,12 @@ participants.patch('/:id/heartbeat', async (c) => {
   const id = c.req.param('id') as string;
 
   try {
+    const body = await c.req.json<{ sessionToken?: string }>().catch(() => null);
+    if (!body?.sessionToken) {
+      return c.json({ error: 'sessionToken is required' }, 400);
+    }
+    const { sessionToken } = body;
+
     const [room] = await sql`
       SELECT id FROM rooms WHERE slug = ${slug} AND status != 'deleted'
     `;
@@ -137,7 +143,7 @@ participants.patch('/:id/heartbeat', async (c) => {
 
     await sql`
       UPDATE participants SET last_seen_at = now()
-      WHERE id = ${id} AND room_id = ${roomId}
+      WHERE id = ${id} AND room_id = ${roomId} AND session_token = ${sessionToken}
     `;
 
     await sql`
