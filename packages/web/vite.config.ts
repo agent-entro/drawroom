@@ -3,10 +3,12 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
+  base: '/draw/',
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
     strictPort: true,
+    allowedHosts: ['agent.br-ndt.dev'],
   },
   build: {
     outDir: 'dist',
