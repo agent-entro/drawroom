@@ -541,17 +541,17 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 
 - [x] Initialize monorepo with `pnpm` workspaces
   - `packages/web` — React + Vite frontend ✅
-  - `packages/api` — Hono REST server (Node.js) ⬚
-  - `packages/yws` — y-websocket wrapper with LevelDB + Redis ⬚
+  - `packages/api` — Hono REST server (Node.js) ✅
+  - `packages/yws` — y-websocket wrapper with LevelDB + Redis ✅
   - `packages/shared` — Shared types and constants ✅
 - [x] Configure TypeScript, ESLint, Prettier across all packages
 - [x] Set up Tailwind CSS v4 in `packages/web`
-- [ ] Remove legacy scaffolding (`packages/party`, `supabase/`) from old plan
-- [ ] Create `packages/api` — Hono REST server (Node.js)
-- [ ] Create `packages/yws` — y-websocket wrapper with LevelDB + Redis
-- [ ] Write `docker-compose.yml` (PostgreSQL, Redis, y-websocket, API)
-- [ ] Run `docker compose up -d` — verify all containers healthy
-- [ ] Write and run initial SQL migrations (Room, Participant tables)
+- [x] Remove legacy scaffolding (`packages/party`, `supabase/`) from old plan
+- [x] Create `packages/api` — Hono REST server (Node.js)
+- [x] Create `packages/yws` — y-websocket wrapper with LevelDB + Redis
+- [x] Write `docker-compose.yml` (PostgreSQL, Redis, y-websocket, API)
+- [x] Run `docker compose up -d` — verify all containers healthy
+- [x] Write and run initial SQL migrations (Room, Participant tables)
 - [ ] Verify WebSocket connectivity: browser → `ws://localhost:1234` → y-websocket ping
 - [ ] GitHub Actions: lint + type-check on PR
 

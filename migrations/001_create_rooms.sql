@@ -9,8 +9,7 @@ CREATE TABLE rooms (
   title            VARCHAR(100)  NOT NULL DEFAULT 'Untitled Room',
   created_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
   last_active_at   TIMESTAMPTZ   NOT NULL DEFAULT now(),
-  -- expires_at is computed; kept as a plain column updated alongside last_active_at
-  -- so it can be indexed and queried efficiently without a computed-column workaround.
+  -- expires_at is updated alongside last_active_at so it can be indexed.
   expires_at       TIMESTAMPTZ   NOT NULL DEFAULT (now() + INTERVAL '7 days'),
   is_persistent    BOOLEAN       NOT NULL DEFAULT false,
   owner_id         UUID          NULL,      -- FK to users.id added in Phase 2 migration

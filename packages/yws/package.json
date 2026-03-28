@@ -1,25 +1,27 @@
 {
-  "name": "@drawroom/party",
+  "name": "@drawroom/yws",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "partykit dev",
-    "deploy": "partykit deploy",
+    "dev": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
     "type-check": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --ext .ts",
     "test": "vitest run"
   },
   "dependencies": {
-    "@drawroom/shared": "workspace:*",
-    "hono": "^4.0.0",
-    "partykit": "^0.0.104",
-    "partysocket": "^1.0.0",
-    "y-partykit": "^0.0.23",
+    "ioredis": "^5.4.0",
+    "ws": "^8.18.0",
+    "y-leveldb": "^0.1.2",
+    "y-websocket": "^2.0.4",
     "yjs": "^13.6.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.0.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }

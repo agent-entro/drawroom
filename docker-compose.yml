@@ -1,0 +1,81 @@
+# DrawRoom local dev — docker compose up starts all backend services
+# Frontend (packages/web) runs outside Docker via: pnpm --filter web dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: drawroom
+      POSTGRES_USER: drawroom
+      POSTGRES_PASSWORD: devpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d  # auto-applied on first boot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drawroom -d drawroom"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  yws:
+    build:
+      context: .
+      dockerfile: packages/yws/Dockerfile
+    environment:
+      PORT: "1234"
+      PERSISTENCE: leveldb
+      PERSISTENCE_DIR: /data/yjs
+    ports:
+      - "1234:1234"
+    volumes:
+      - yjs_data:/data/yjs
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:1234/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/api/Dockerfile
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgresql://drawroom:devpassword@postgres:5432/drawroom
+      REDIS_URL: redis://redis:6379
+      EXPORT_DIR: /data/exports
+      CORS_ORIGIN: "http://localhost:5173"
+    ports:
+      - "3000:3000"
+    volumes:
+      - export_data:/data/exports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  yjs_data:
+  export_data:
