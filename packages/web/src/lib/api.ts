@@ -1,6 +1,9 @@
 // REST API client — thin wrapper around fetch, typed with shared domain types
 import type { Room, ChatMessage, Participant, ParticipantView } from '@drawroom/shared';
 
+// VITE_API_URL is for cross-origin setups (e.g. "https://api.example.com").
+// In dev the Vite proxy forwards /api/* to localhost:3000, so the default
+// must be '' — not '/draw', which is the frontend asset base path, not the API.
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 class ApiError extends Error {
