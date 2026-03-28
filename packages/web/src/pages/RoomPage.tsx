@@ -1,14 +1,15 @@
 /**
- * Room page — tldraw canvas with real-time Yjs sync.
+ * Room page — plain Canvas drawing board with real-time Yjs sync.
  * Chat panel is a placeholder until Phase 3.
  */
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useRoom } from '../hooks/useRoom.ts';
 import DisplayNameModal from '../components/DisplayNameModal.tsx';
 import ParticipantList from '../components/ParticipantList.tsx';
+import type { ConnectionStatus } from '../hooks/useYjsCanvas.ts';
 
-// Code-split the heavy tldraw bundle
+// Code-split the canvas bundle
 const DrawCanvas = lazy(() => import('../components/DrawCanvas.tsx'));
 
 const WS_URL = (import.meta.env['VITE_YWS_URL'] as string | undefined) ?? 'ws://localhost:1234';
@@ -17,8 +18,15 @@ export default function RoomPage() {
   const { slug } = useParams<{ slug: string }>();
   const roomSlug = slug ?? 'default';
 
-  const { participant, participants, needsDisplayName, isLoading, error, joinWithName } =
-    useRoom(roomSlug);
+  const {
+    participant, participants, needsDisplayName, isLoading, error,
+    joinWithName, notifyWsConnected,
+  } = useRoom(roomSlug);
+
+  const handleCanvasStatusChange = useCallback(
+    (status: ConnectionStatus) => notifyWsConnected(status === 'online'),
+    [notifyWsConnected],
+  );
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -80,6 +88,8 @@ export default function RoomPage() {
               wsUrl={WS_URL}
               userName={participant?.displayName}
               userColor={participant?.color}
+              participantId={participant?.id}
+              onStatusChange={handleCanvasStatusChange}
             />
           </Suspense>
         </section>

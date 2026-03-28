@@ -24,6 +24,8 @@ export default function ParticipantList({ participants, currentParticipantId }: 
           <div key={p.id} className="relative group" title={`${p.displayName}${isMe ? ' (you)' : ''}`}>
             {/* Color avatar circle */}
             <div
+              role="img"
+              aria-label={`${p.displayName}${isMe ? ' (you)' : ''}, ${online ? 'online' : 'away'}`}
               className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold select-none border-2 border-white shadow"
               style={{ backgroundColor: p.color }}
             >

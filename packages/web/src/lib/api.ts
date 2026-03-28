@@ -1,5 +1,5 @@
 // REST API client — thin wrapper around fetch, typed with shared domain types
-import type { Room, ChatMessage, Participant, ParticipantView } from '@drawroom/shared';
+import type { Room, ChatMessage, Participant, ParticipantView, Export } from '@drawroom/shared';
 
 // VITE_API_URL is for cross-origin setups (e.g. "https://api.example.com").
 // In dev the Vite proxy forwards /api/* to localhost:3000, so the default
@@ -25,6 +25,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await res.text().catch(() => res.statusText);
     throw new ApiError(res.status, text);
   }
+  // 204 No Content — return undefined (cast to T for void endpoints)
+  if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
 }
 
@@ -82,10 +84,10 @@ export function joinRoom(slug: string, body: JoinRoomRequest): Promise<JoinRoomR
   });
 }
 
-export function heartbeat(slug: string, participantId: string): Promise<void> {
+export function heartbeat(slug: string, participantId: string, sessionToken: string): Promise<void> {
   return request<void>(
     `/api/rooms/${encodeURIComponent(slug)}/participants/${encodeURIComponent(participantId)}/heartbeat`,
-    { method: 'PATCH' },
+    { method: 'PATCH', body: JSON.stringify({ sessionToken }) },
   );
 }
 
@@ -94,5 +96,50 @@ export function getParticipants(slug: string): Promise<{ participants: Participa
     `/api/rooms/${encodeURIComponent(slug)}/participants`,
   );
 }
+
+// ─── Export endpoints ──────────────────────────────────────────────────────────
+
+export interface UploadExportRequest {
+  roomSlug: string;
+  participantId: string;
+  format: 'png' | 'svg';
+  blob: Blob;
+}
+
+export interface UploadExportResponse {
+  id: string;
+  downloadUrl: string;
+}
+
+/**
+ * Upload a canvas export using multipart form data (binary — no base64 overhead).
+ * The server resolves the roomId from the slug + participantId.
+ */
+export async function uploadExport({
+  roomSlug,
+  participantId,
+  format,
+  blob,
+}: UploadExportRequest): Promise<UploadExportResponse> {
+  const form = new FormData();
+  form.append('roomSlug', roomSlug);
+  form.append('participantId', participantId);
+  form.append('format', format);
+  form.append('file', blob, `export.${format}`);
+
+  const res = await fetch(`${API_BASE}/api/exports`, {
+    method: 'POST',
+    body: form,
+    // No Content-Type header — browser sets multipart boundary automatically
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, text);
+  }
+  return res.json() as Promise<UploadExportResponse>;
+}
+
+export type { Export };
 
 export { ApiError };

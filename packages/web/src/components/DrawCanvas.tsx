@@ -13,7 +13,8 @@
 import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import { getUserId, getUserName } from '../lib/user.ts';
 import { getRandomParticipantColor } from '../lib/colors.ts';
-import { useYjsCanvas, type Stroke, type StrokePoint } from '../hooks/useYjsCanvas.ts';
+import { useYjsCanvas, type Stroke, type StrokePoint, type ConnectionStatus } from '../hooks/useYjsCanvas.ts';
+import { uploadExport } from '../lib/api.ts';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -84,6 +85,10 @@ interface DrawCanvasProps {
   wsUrl?: string;
   userName?: string;
   userColor?: string;
+  /** Passed through to Yjs awareness so the YWS server can drive DB heartbeats */
+  participantId?: string;
+  /** Called whenever the Yjs WebSocket connection status changes */
+  onStatusChange?: (status: ConnectionStatus) => void;
 }
 
 export default function DrawCanvas({
@@ -91,6 +96,8 @@ export default function DrawCanvas({
   wsUrl = 'ws://localhost:1234',
   userName: userNameProp,
   userColor: userColorProp,
+  participantId,
+  onStatusChange,
 }: DrawCanvasProps) {
   const userId = getUserId();
   const userName = userNameProp ?? getUserName();
@@ -100,7 +107,12 @@ export default function DrawCanvas({
   const {
     strokes, addStroke, deleteStroke, clearAll,
     setMyCursor, remoteCursors, status, undo, redo,
-  } = useYjsCanvas({ roomSlug, wsUrl, userId, userName, userColor });
+  } = useYjsCanvas({ roomSlug, wsUrl, userId, userName, userColor, participantId });
+
+  // Notify parent of WS status changes (used to pause HTTP heartbeat polling)
+  useEffect(() => {
+    onStatusChange?.(status);
+  }, [status, onStatusChange]);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
 
@@ -120,6 +132,7 @@ export default function DrawCanvas({
   const [tool, setTool] = useState<Tool>('pen');
   const [color, setColor] = useState<string>(PRESET_COLORS[0]);
   const [lineWidth, setLineWidth] = useState<LineWidthOption>(LINE_WIDTHS[1]);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Keep refs in sync with state (avoids pointer handler re-creation)
   useEffect(() => { toolRef.current = tool; }, [tool]);
@@ -270,6 +283,54 @@ export default function DrawCanvas({
     return () => window.removeEventListener('keydown', onKey);
   }, [undo, redo]);
 
+  // ── Export ─────────────────────────────────────────────────────────────────
+
+  const handleExport = useCallback(async () => {
+    const canvas = canvasRef.current;
+    if (!canvas || isExporting) return;
+    setIsExporting(true);
+    try {
+      const blob = await new Promise<Blob | null>((res) =>
+        canvas.toBlob(res, 'image/png'),
+      );
+      if (!blob) throw new Error('Canvas export failed');
+
+      // If we have a room session, upload to server for a stable download URL.
+      // Otherwise fall back to a local object-URL download (no auth needed).
+      if (participantId) {
+        // roomId is not directly available here; server resolves from slug via participant auth.
+        // We use a sentinel so the server derives the correct roomId.
+        try {
+          const { downloadUrl } = await uploadExport({
+            roomSlug,
+            participantId,
+            format: 'png',
+            blob,
+          });
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          a.download = `drawroom-${roomSlug}.png`;
+          a.click();
+          return;
+        } catch {
+          // Fall through to local download on any error
+        }
+      }
+
+      // Local fallback — no server needed
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `drawroom-${roomSlug}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[DrawCanvas] export error:', err);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [isExporting, participantId, roomSlug]);
+
   // ── Derived styles ─────────────────────────────────────────────────────────
 
   const d = ERASER_RADIUS * 2;
@@ -293,6 +354,8 @@ export default function DrawCanvas({
       {/* Drawing surface */}
       <canvas
         ref={canvasRef}
+        aria-label="Collaborative drawing canvas"
+        role="img"
         className="absolute inset-0 touch-none select-none"
         style={{ cursor: canvasCursor }}
         onPointerDown={handlePointerDown}
@@ -347,15 +410,15 @@ export default function DrawCanvas({
         className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-lg"
       >
         {/* Pen */}
-        <ToolBtn active={tool === 'pen'} title="Pen (P)" onClick={() => setTool('pen')}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <ToolBtn active={tool === 'pen'} title="Pen (P)" aria-label="Pen tool (P)" onClick={() => setTool('pen')}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
           </svg>
         </ToolBtn>
 
         {/* Eraser */}
-        <ToolBtn active={tool === 'eraser'} title="Eraser (E)" onClick={() => setTool('eraser')}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <ToolBtn active={tool === 'eraser'} title="Eraser (E)" aria-label="Eraser tool (E)" onClick={() => setTool('eraser')}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/>
             <path d="M22 21H7"/><path d="m5 11 9 9"/>
           </svg>
@@ -364,11 +427,13 @@ export default function DrawCanvas({
         <Divider />
 
         {/* Color swatches */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1" role="group" aria-label="Color palette">
           {PRESET_COLORS.map((c) => (
             <button
               key={c}
               title={c}
+              aria-label={`Color ${c}${color === c ? ' (selected)' : ''}`}
+              aria-pressed={color === c}
               onClick={() => { setColor(c); setTool('pen'); }}
               className="h-5 w-5 rounded-full border-2 transition-transform hover:scale-110 focus:outline-none"
               style={{
@@ -381,6 +446,7 @@ export default function DrawCanvas({
           {/* Custom color — rainbow gradient opens native color picker */}
           <label
             title="Custom color"
+            aria-label="Custom color picker"
             className="relative h-5 w-5 cursor-pointer overflow-hidden rounded-full border-2 transition-transform hover:scale-110"
             style={{
               background: 'conic-gradient(red,yellow,lime,aqua,blue,magenta,red)',
@@ -390,6 +456,7 @@ export default function DrawCanvas({
             <input
               type="color"
               value={color}
+              aria-label="Custom color"
               onChange={(e) => { setColor(e.target.value); setTool('pen'); }}
               className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
             />
@@ -399,55 +466,75 @@ export default function DrawCanvas({
         <Divider />
 
         {/* Line width */}
+        <div role="group" aria-label="Stroke width">
         {LINE_WIDTHS.map((w) => {
           const dot = Math.min(4 + w, 16);
           return (
             <button
               key={w}
-              title={`Stroke width ${w}`}
+              title={`Stroke width ${w}px`}
+              aria-label={`Stroke width ${w}px${lineWidth === w && tool === 'pen' ? ' (selected)' : ''}`}
+              aria-pressed={lineWidth === w && tool === 'pen'}
               onClick={() => { setLineWidth(w); setTool('pen'); }}
               className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
                 lineWidth === w && tool === 'pen' ? 'bg-blue-100' : 'hover:bg-gray-100'
               }`}
             >
-              <span className="rounded-full bg-gray-700" style={{ width: dot, height: dot }} />
+              <span className="rounded-full bg-gray-700" style={{ width: dot, height: dot }} aria-hidden="true" />
             </button>
           );
         })}
+        </div>
 
         <Divider />
 
         {/* Undo / Redo */}
-        <ToolBtn title="Undo (Ctrl+Z)" onClick={undo}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <ToolBtn title="Undo (Ctrl+Z)" aria-label="Undo (Ctrl+Z)" onClick={undo}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M3 7v6h6"/><path d="M3 13A9 9 0 1 0 6 6.7L3 13"/>
           </svg>
         </ToolBtn>
-        <ToolBtn title="Redo (Ctrl+Shift+Z)" onClick={redo}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <ToolBtn title="Redo (Ctrl+Shift+Z)" aria-label="Redo (Ctrl+Shift+Z)" onClick={redo}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M21 7v6h-6"/><path d="M21 13A9 9 0 1 1 18 6.7L21 13"/>
           </svg>
         </ToolBtn>
 
         <Divider />
 
+        {/* Export PNG */}
+        <ToolBtn
+          title="Export as PNG"
+          aria-label={isExporting ? 'Exporting…' : 'Export canvas as PNG'}
+          onClick={handleExport}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </ToolBtn>
+
         {/* Clear */}
         <ToolBtn
           danger
           title="Clear canvas for everyone"
+          aria-label="Clear canvas for everyone"
           onClick={() => { if (window.confirm('Clear the canvas for everyone in this room?')) clearAll(); }}
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M3 6h18"/><path d="M8 6V4h8v2"/>
             <path d="M19 6l-1 14H6L5 6"/>
           </svg>
         </ToolBtn>
 
-        {/* Connection dot */}
+        {/* Connection status */}
         <div
+          role="status"
           className="ml-1 h-2 w-2 rounded-full"
           style={{ backgroundColor: statusColor }}
           title={`Connection: ${status}`}
+          aria-label={`Connection status: ${status}`}
         />
       </div>
     </div>
@@ -460,14 +547,16 @@ interface ToolBtnProps {
   active?: boolean;
   danger?: boolean;
   title: string;
+  'aria-label'?: string;
   onClick: () => void;
   children: React.ReactNode;
 }
 
-function ToolBtn({ active, danger, title, onClick, children }: ToolBtnProps) {
+function ToolBtn({ active, danger, title, 'aria-label': ariaLabel, onClick, children }: ToolBtnProps) {
   return (
     <button
       title={title}
+      aria-label={ariaLabel ?? title}
       onClick={onClick}
       className={[
         'flex h-7 w-7 items-center justify-center rounded-lg transition-colors',

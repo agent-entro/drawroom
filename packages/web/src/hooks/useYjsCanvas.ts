@@ -51,6 +51,8 @@ interface AwarenessUser {
   userName: string;
   userColor: string;
   cursor: { x: number; y: number } | null;
+  /** Participant DB id — used by the YWS server to drive server-side presence heartbeats */
+  participantId?: string;
 }
 
 export interface YjsCanvasOptions {
@@ -59,6 +61,13 @@ export interface YjsCanvasOptions {
   userId: string;
   userName: string;
   userColor: string;
+  /** When provided, included in awareness so the YWS server can keep DB presence fresh */
+  participantId?: string;
+  /**
+   * Called whenever any peer's awareness state changes (join/leave/cursor move).
+   * Use this to drive event-driven participant list refreshes rather than polling.
+   */
+  onAwarenessChange?: () => void;
 }
 
 export interface YjsCanvasState {
@@ -83,6 +92,8 @@ export function useYjsCanvas({
   userId,
   userName,
   userColor,
+  participantId,
+  onAwarenessChange,
 }: YjsCanvasOptions): YjsCanvasState {
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([]);
@@ -96,11 +107,17 @@ export function useYjsCanvas({
   const undoManagerRef = useRef<Y.UndoManager | null>(null);
   // Keep a snapshot of awareness user fields to avoid re-setting them on every
   // cursor move (they only change when the component re-mounts with new props).
-  const myUserRef = useRef<AwarenessUser>({ userId, userName, userColor, cursor: null });
+  const myUserRef = useRef<AwarenessUser>({ userId, userName, userColor, cursor: null, participantId });
+  // Stable ref for the awareness-change callback — avoids re-running the effect.
+  const onAwarenessChangeRef = useRef(onAwarenessChange);
 
   useEffect(() => {
-    myUserRef.current = { ...myUserRef.current, userId, userName, userColor };
-  }, [userId, userName, userColor]);
+    myUserRef.current = { ...myUserRef.current, userId, userName, userColor, participantId };
+  }, [userId, userName, userColor, participantId]);
+
+  useEffect(() => {
+    onAwarenessChangeRef.current = onAwarenessChange;
+  }, [onAwarenessChange]);
 
   useEffect(() => {
     const doc = new Y.Doc();

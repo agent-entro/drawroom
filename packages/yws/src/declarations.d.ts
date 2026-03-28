@@ -9,13 +9,26 @@ declare module 'y-websocket/bin/utils' {
     gc?: boolean;
   }
 
+  /** Subset of the y-protocols Awareness API needed for presence heartbeats */
+  export interface WSAwareness {
+    clientID: number;
+    getStates(): Map<number, Record<string, unknown>>;
+    on(event: 'change', handler: (changes: { added: number[]; updated: number[]; removed: number[] }) => void): void;
+    off(event: 'change', handler: (changes: { added: number[]; updated: number[]; removed: number[] }) => void): void;
+  }
+
+  /** y-websocket's internal shared doc — Y.Doc extended with awareness */
+  export interface WSSharedDoc extends Y.Doc {
+    awareness: WSAwareness;
+  }
+
   export function setupWSConnection(
     conn: unknown,
     req: http.IncomingMessage,
     options?: SetupWSConnectionOptions,
   ): void;
 
-  export const docs: Map<string, Y.Doc>;
+  export const docs: Map<string, WSSharedDoc>;
 }
 
 declare module 'y-leveldb' {

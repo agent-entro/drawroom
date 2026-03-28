@@ -10,6 +10,7 @@ import rooms from './routes/rooms.js';
 import messages from './routes/messages.js';
 import participants from './routes/participants.js';
 import exports_ from './routes/exports.js';
+import internal from './routes/internal.js';
 
 const PORT = parseInt(process.env['PORT'] ?? '3000', 10);
 
@@ -26,6 +27,7 @@ app.use('*', cors({
 // Routes
 app.route('/api/health', health);
 app.route('/api/exports', exports_);
+app.route('/api/internal', internal);
 
 // Mount messages under rooms — must come before rooms to avoid slug conflict
 const roomsWithMessages = new Hono();
