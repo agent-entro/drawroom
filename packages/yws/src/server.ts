@@ -1,47 +1,30 @@
 // DrawRoom y-websocket server — CRDT sync with LevelDB persistence
 //
-// Extends the base y-websocket server with server-side presence heartbeats:
-// when a client includes `participantId` in their Yjs awareness state, this
-// server forwards a heartbeat to the REST API so the HTTP polling interval
-// on the client can be reduced to participant-list refresh only.
+// Persistence is handled by y-websocket's native YPERSISTENCE env var —
+// this avoids importing yjs directly (which would create a second Yjs instance
+// and break constructor identity checks between server.ts and y-websocket/bin/utils.cjs).
+//
+// Awareness is tapped after setupWSConnection to drive server-side presence
+// heartbeats to the REST API.
 //
 // Env vars:
 //   PORT             — WebSocket server port (default: 1234)
-//   PERSISTENCE_DIR  — LevelDB data directory (default: ./data/yjs)
-//   PERSISTENCE      — Set to 'leveldb' to enable persistence (default: 'leveldb')
+//   YPERSISTENCE     — LevelDB data directory; enables persistence when set
 //   API_URL          — REST API base URL for heartbeat forwarding (default: http://localhost:3000)
 //   INTERNAL_SECRET  — Shared secret for server-to-server heartbeat calls (default: local-dev-secret)
 import * as http from 'http';
 import { WebSocketServer } from 'ws';
 import { setupWSConnection, docs, type WSSharedDoc } from 'y-websocket/bin/utils';
-import { LeveldbPersistence } from 'y-leveldb';
-import * as Y from 'yjs';
 
 const PORT = parseInt(process.env['PORT'] ?? '1234', 10);
-const PERSISTENCE_DIR = process.env['PERSISTENCE_DIR'] ?? './data/yjs';
-const ENABLE_PERSISTENCE = (process.env['PERSISTENCE'] ?? 'leveldb') === 'leveldb';
 const API_URL = process.env['API_URL'] ?? 'http://localhost:3000';
 const INTERNAL_SECRET = process.env['INTERNAL_SECRET'] ?? 'local-dev-secret';
 
-// LevelDB persistence — survives container restarts
-let persistence: LeveldbPersistence | null = null;
-if (ENABLE_PERSISTENCE) {
-  persistence = new LeveldbPersistence(PERSISTENCE_DIR);
-  console.log(`[yws] LevelDB persistence enabled at ${PERSISTENCE_DIR}`);
-}
-
-// In-memory map of roomName → Y.Doc (managed by y-websocket)
-// y-websocket's setupWSConnection manages this internally, but we track
-// active docs here to drive persistence.
-const localDocs = new Map<string, Y.Doc>();
-
-function getOrCreateDoc(roomName: string): Y.Doc {
-  const existing = localDocs.get(roomName);
-  if (existing) return existing;
-
-  const doc = new Y.Doc();
-  localDocs.set(roomName, doc);
-  return doc;
+// y-websocket reads YPERSISTENCE itself from the environment; log so it's visible.
+if (process.env['YPERSISTENCE']) {
+  console.log(`[yws] LevelDB persistence enabled at ${process.env['YPERSISTENCE']}`);
+} else {
+  console.log('[yws] Persistence disabled (set YPERSISTENCE to enable)');
 }
 
 // ── Presence heartbeat forwarding ─────────────────────────────────────────────
@@ -96,56 +79,26 @@ wss.on('connection', (ws, req) => {
   // Strip the "r/" prefix to get the slug used by the REST API
   const roomSlug = roomName.replace(/^r\//, '');
 
-  const setupConnection = () => {
-    setupWSConnection(ws, req, { docName: roomName });
+  // y-websocket handles doc creation, sync protocol, and persistence (YPERSISTENCE).
+  setupWSConnection(ws, req, { docName: roomName });
 
-    // Hook into the y-websocket managed doc's awareness after connection setup.
-    // `docs` is the module-level map exported by y-websocket/bin/utils.
-    const sharedDoc: WSSharedDoc | undefined = docs.get(roomName);
-    if (sharedDoc?.awareness) {
-      const onAwarenessChange = ({ added, updated }: { added: number[]; updated: number[]; removed: number[] }) => {
-        const states = sharedDoc.awareness.getStates();
-        for (const clientId of [...added, ...updated]) {
-          const state = states.get(clientId) as { user?: { participantId?: string } } | undefined;
-          if (state?.user?.participantId) {
-            scheduleHeartbeat(roomSlug, state.user.participantId);
-          }
+  // Hook into the y-websocket managed doc's awareness after connection setup.
+  // `docs` is the module-level map exported by y-websocket/bin/utils.
+  const sharedDoc: WSSharedDoc | undefined = docs.get(roomName);
+  if (sharedDoc?.awareness) {
+    const onAwarenessChange = ({ added, updated }: { added: number[]; updated: number[]; removed: number[] }) => {
+      const states = sharedDoc.awareness.getStates();
+      for (const clientId of [...added, ...updated]) {
+        const state = states.get(clientId) as { user?: { participantId?: string } } | undefined;
+        if (state?.user?.participantId) {
+          scheduleHeartbeat(roomSlug, state.user.participantId);
         }
-      };
-      sharedDoc.awareness.on('change', onAwarenessChange);
-      // Clean up listener when this specific client disconnects
-      ws.on('close', () => sharedDoc.awareness.off('change', onAwarenessChange));
-    }
-  };
-
-  // Load persisted doc state before syncing (if persistence is enabled)
-  if (persistence) {
-    const doc = getOrCreateDoc(roomName);
-    persistence.getYDoc(roomName).then((persistedDoc: Y.Doc | null) => {
-      if (persistedDoc) {
-        const update = Y.encodeStateAsUpdate(persistedDoc);
-        Y.applyUpdate(doc, update);
       }
-      setupConnection();
-    }).catch((err: unknown) => {
-      console.error(`[yws] Failed to load persisted doc for ${roomName}:`, err);
-      setupConnection();
-    });
-  } else {
-    setupConnection();
+    };
+    sharedDoc.awareness.on('change', onAwarenessChange);
+    // Clean up listener when this specific client disconnects
+    ws.on('close', () => sharedDoc.awareness.off('change', onAwarenessChange));
   }
-
-  ws.on('close', () => {
-    // Persist doc state on disconnect (debounce is handled externally; this is a safety flush)
-    if (persistence) {
-      const doc = localDocs.get(roomName);
-      if (doc) {
-        persistence.storeUpdate(roomName, Y.encodeStateAsUpdate(doc)).catch((err: unknown) => {
-          console.error(`[yws] Failed to persist doc for ${roomName}:`, err);
-        });
-      }
-    }
-  });
 });
 
 server.listen(PORT, () => {
@@ -161,7 +114,6 @@ function shutdown(): void {
 
   wss.close(() => {
     server.close(() => {
-      persistence?.destroy().catch(() => {});
       process.exit(0);
     });
   });

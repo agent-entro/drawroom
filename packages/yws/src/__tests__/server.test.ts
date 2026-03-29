@@ -1,7 +1,6 @@
 // Smoke tests for the y-websocket server — verifies HTTP ping and WS upgrade
 import { describe, it, expect, afterAll } from 'vitest';
 import * as http from 'http';
-import * as Y from 'yjs';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const TEST_PORT = 19234;
@@ -63,13 +62,4 @@ describe('y-websocket server', () => {
     });
   });
 
-  it('Yjs doc can encode state', () => {
-    // Sanity check: Yjs is importable and functional
-    const doc = new Y.Doc();
-    const arr = doc.getArray('items');
-    arr.push([1, 2, 3]);
-    const encoded = Y.encodeStateAsUpdate(doc);
-    expect(encoded).toBeInstanceOf(Uint8Array);
-    expect(encoded.length).toBeGreaterThan(0);
-  });
 });
