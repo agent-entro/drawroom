@@ -31,17 +31,11 @@ body {
 
 /* ─── touch-action overrides ────────────────────────────────────────────── */
 
-/* Scrollable nav/header — allow horizontal pan */
-header, nav, [role="navigation"] {
-  touch-action: pan-x;
-}
+/* Nav — allow horizontal pan only */
+nav, .nav-buttons { touch-action: pan-x; }
 
 /* Buttons — manipulation allows tap + pinch, blocks double-tap zoom */
-button, [role="button"] {
-  touch-action: manipulation;
-}
+button { touch-action: manipulation; }
 
-/* Canvas and drawing surfaces — suppress all default touch behaviors */
-canvas, [aria-label="Drawing canvas"] {
-  touch-action: none;
-}
+/* Canvas — suppress all default touch behaviors */
+canvas, [role="canvas"] { touch-action: none; }
