@@ -52,8 +52,14 @@ export interface GetMessagesParams {
   limit?: number;
 }
 
+/** ChatMessage enriched with participant display info from a JOIN. */
+export interface ChatHistoryMessage extends ChatMessage {
+  displayName: string;
+  color: string;
+}
+
 export interface GetMessagesResponse {
-  messages: ChatMessage[];
+  messages: ChatHistoryMessage[];
   hasMore: boolean;
   nextCursor: string | null;
 }
@@ -66,6 +72,21 @@ export function getMessages(
   if (cursor) params.set('cursor', cursor);
   params.set('limit', String(limit));
   return request<GetMessagesResponse>(`/api/rooms/${encodeURIComponent(slug)}/messages?${params}`);
+}
+
+export interface PostMessageRequest {
+  participantId: string;
+  content: string;
+  type?: 'message' | 'comment';
+  canvasX?: number;
+  canvasY?: number;
+}
+
+export function postMessage(slug: string, body: PostMessageRequest): Promise<ChatMessage> {
+  return request<ChatMessage>(`/api/rooms/${encodeURIComponent(slug)}/messages`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 // ─── Participant endpoints ─────────────────────────────────────────────────────

@@ -116,6 +116,10 @@ export interface YjsCanvasState {
   status: ConnectionStatus;
   undo: () => void;
   redo: () => void;
+  /** The live Yjs document — share with useChat to add chat to the same CRDT doc. */
+  yjsDoc: Y.Doc | null;
+  /** The live WebsocketProvider — share with useChat for awareness (typing indicators). */
+  yjsProvider: WebsocketProvider | null;
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -135,6 +139,9 @@ export function useYjsCanvas({
   const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([]);
   const [remoteActiveStrokes, setRemoteActiveStrokes] = useState<DrawOp[]>([]);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
+  // Exposed so useChat can share the same Yjs doc + WS connection
+  const [yjsDoc, setYjsDoc] = useState<Y.Doc | null>(null);
+  const [yjsProvider, setYjsProvider] = useState<WebsocketProvider | null>(null);
 
   // Stable refs to mutable Yjs objects — safe to call from callbacks without
   // stale-closure issues.
@@ -174,6 +181,8 @@ export function useYjsCanvas({
       disableBc: false,
     });
     awarenessRef.current = provider.awareness;
+    setYjsDoc(doc);
+    setYjsProvider(provider);
 
     // ── Connection status ──────────────────────────────────────────────────
 
@@ -248,6 +257,8 @@ export function useYjsCanvas({
       docRef.current = null;
       awarenessRef.current = null;
       undoManagerRef.current = null;
+      setYjsDoc(null);
+      setYjsProvider(null);
     };
   }, [roomSlug, wsUrl]); // userId/userName/userColor handled via refs
 
@@ -304,5 +315,6 @@ export function useYjsCanvas({
     setMyCursor, setMyActiveStroke,
     remoteCursors, remoteActiveStrokes,
     status, undo, redo,
+    yjsDoc, yjsProvider,
   };
 }

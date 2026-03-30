@@ -598,17 +598,17 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 
 **Goal:** Chat panel with real-time messaging alongside the canvas.
 
-- [ ] Chat panel UI (right sidebar, collapsible):
+- [x] Chat panel UI (right sidebar, collapsible):
   - Message list with name, color indicator, timestamp
   - Enter-to-send text input
   - Emoji picker (`emoji-mart`, lazy-loaded)
   - Auto-scroll; "X is typing..." via Yjs awareness
-- [ ] Chat transport via y-websocket (same WS connection as canvas):
+- [x] Chat transport via y-websocket (same WS connection as canvas):
   - `CHAT_SEND` event from client
   - y-websocket broadcasts to room; Hono API persists to PostgreSQL (async, non-blocking)
-- [ ] Chat history on join: `GET /api/rooms/:slug/messages` (last 100, paginated)
-- [ ] Canvas-anchored comments: Comment tool → click → capture position → pin rendered on canvas → thread in chat panel
-- [ ] System messages: join/leave events
+- [x] Chat history on join: `GET /api/rooms/:slug/messages` (last 100, paginated)
+- [x] Canvas-anchored comments: Comment tool → click → capture position → pin rendered on canvas → thread in chat panel
+- [x] System messages: join/leave events
 
 **Deliverable:** Chat and canvas-anchored comments work in real time locally.
 

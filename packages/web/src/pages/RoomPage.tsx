@@ -1,12 +1,16 @@
 /**
- * Room page — plain Canvas drawing board with real-time Yjs sync.
- * Chat panel is a placeholder until Phase 3.
+ * Room page — canvas + real-time chat sidebar.
+ *
+ * Chat state (useYjsChat) lives here so comment pins can flow
+ * from ChatPanel → DrawCanvas without prop-drilling through lazy boundaries.
  */
 import { Suspense, lazy } from 'react';
 import { useParams } from 'react-router-dom';
 import { useRoom } from '../hooks/useRoom.ts';
+import { useYjsChat } from '../hooks/useYjsChat.ts';
 import DisplayNameModal from '../components/DisplayNameModal.tsx';
 import ParticipantList from '../components/ParticipantList.tsx';
+import ChatPanel from '../components/ChatPanel.tsx';
 
 // Code-split the canvas bundle
 const DrawCanvas = lazy(() => import('../components/DrawCanvas.tsx'));
@@ -30,6 +34,22 @@ export default function RoomPage() {
     participant, participants, needsDisplayName, isLoading, error,
     joinWithName, refreshParticipants,
   } = useRoom(roomSlug);
+
+  // Chat state — lifted here so comment pins can flow to DrawCanvas
+  const {
+    messages,
+    typingNames,
+    sendMessage,
+    setTyping,
+    isConnected: chatConnected,
+    commentPins,
+  } = useYjsChat({
+    roomSlug,
+    wsUrl: WS_URL,
+    participant: participant
+      ? { id: participant.id, displayName: participant.displayName, color: participant.color }
+      : null,
+  });
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -94,23 +114,30 @@ export default function RoomPage() {
               userColor={participant?.color}
               participantId={participant?.id}
               onParticipantsRefresh={refreshParticipants}
+              commentPins={commentPins.map((m) => ({
+                id: m.id,
+                content: m.content,
+                displayName: m.displayName,
+                color: m.color,
+                x: m.canvasX!,
+                y: m.canvasY!,
+              }))}
+              onCommentCreate={(content, x, y) => {
+                sendMessage(content, { canvasX: x, canvasY: y, type: 'comment' });
+              }}
             />
           </Suspense>
         </section>
 
-        {/* Chat placeholder — Phase 3 */}
-        <aside className="w-72 flex flex-col bg-white border-l border-gray-200" aria-label="Chat panel">
-          <div className="flex-1 flex items-center justify-center">
-            <p className="text-gray-400 text-sm">Chat coming in Phase 3</p>
-          </div>
-          <div className="border-t border-gray-200 p-3">
-            <input
-              disabled
-              placeholder="Type a message…"
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-400 text-sm"
-            />
-          </div>
-        </aside>
+        {/* Chat panel */}
+        <ChatPanel
+          messages={messages}
+          typingNames={typingNames}
+          sendMessage={sendMessage}
+          setTyping={setTyping}
+          isConnected={chatConnected}
+          participantId={participant?.id}
+        />
       </div>
     </div>
   );
