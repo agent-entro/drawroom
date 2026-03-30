@@ -53,7 +53,7 @@ function MessageItem({ msg, isOwn }: MessageItemProps) {
   const isComment = msg.type === 'comment';
 
   return (
-    <div className={`flex flex-col gap-0.5 mb-2 ${isOwn ? 'items-end' : 'items-start'}`}>
+    <div className={`flex flex-col gap-0.5 ${isOwn ? 'items-end' : 'items-start'}`}>
       {/* Sender line */}
       <div className="flex items-center gap-1.5">
         <span
@@ -64,7 +64,6 @@ function MessageItem({ msg, isOwn }: MessageItemProps) {
         <span className="text-xs font-medium text-gray-700 truncate max-w-[120px]">
           {isOwn ? 'You' : msg.displayName}
         </span>
-        <span className="text-xs text-gray-400">{formatTime(msg.createdAt)}</span>
         {isComment && (
           <span className="text-xs text-blue-500" title="Canvas-anchored comment">
             📍
@@ -74,14 +73,27 @@ function MessageItem({ msg, isOwn }: MessageItemProps) {
       {/* Bubble */}
       <div
         className={[
-          'max-w-[200px] px-3 py-1.5 rounded-2xl text-sm break-words',
-          isOwn ? 'bg-blue-500 text-white rounded-tr-sm' : 'bg-gray-100 text-gray-900 rounded-tl-sm',
+          'max-w-[75%] w-fit text-sm break-words leading-[1.4]',
+          'rounded-[18px]',
+          isOwn
+            ? 'rounded-br-[4px] text-white'
+            : 'rounded-bl-[4px]',
           isComment ? 'border-l-2' : '',
         ].join(' ')}
-        style={isComment && !isOwn ? { borderLeftColor: msg.color } : undefined}
+        style={{
+          padding: '10px 14px',
+          backgroundColor: isOwn ? '#007bff' : '#f1f0f0',
+          color: isOwn ? 'white' : '#333',
+          wordWrap: 'break-word',
+          ...(isComment && !isOwn ? { borderLeftColor: msg.color } : {}),
+        }}
       >
         {msg.content}
       </div>
+      {/* Timestamp below bubble */}
+      <span style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+        {formatTime(msg.createdAt)}
+      </span>
     </div>
   );
 }
@@ -198,7 +210,11 @@ export default function ChatPanel({
   const typingText = formatTypingText(typingNames);
 
   return (
-    <aside className="w-72 flex flex-col bg-white border-l border-gray-200" aria-label="Chat panel">
+    <aside
+      className="w-72 flex flex-col bg-white border-l border-gray-200"
+      aria-label="Chat panel"
+      style={{ fontFamily: "'Inter', 'Segoe UI', Roboto, sans-serif" }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200">
         <div className="flex items-center gap-2">
@@ -234,7 +250,8 @@ export default function ChatPanel({
       {/* Message list */}
       <div
         ref={listRef}
-        className="flex-1 overflow-y-auto px-3 py-2"
+        className="flex-1 overflow-y-auto flex flex-col"
+        style={{ padding: 16, gap: 8 }}
         role="log"
         aria-label="Chat messages"
         aria-live="polite"
@@ -252,8 +269,8 @@ export default function ChatPanel({
       {typingText && <div className="px-3 py-1 text-xs text-gray-400 italic">{typingText}</div>}
 
       {/* Input area */}
-      <div className="border-t border-gray-200 p-2">
-        <div className="flex items-end gap-1">
+      <div className="border-t border-gray-200 bg-gray-50 p-2">
+        <div className="flex items-center gap-1">
           <div className="relative flex-1">
             <textarea
               ref={inputRef}
@@ -266,14 +283,18 @@ export default function ChatPanel({
               disabled={!isConnected}
               aria-label="Chat message input"
               className={[
-                'w-full resize-none rounded-xl border px-3 py-2 text-sm',
+                'w-full resize-none rounded-xl text-sm',
                 'focus:outline-none focus:ring-2 focus:ring-blue-300',
                 'max-h-24 overflow-y-auto',
                 isConnected
-                  ? 'border-gray-200 bg-white text-gray-900'
-                  : 'border-gray-100 bg-gray-50 text-gray-400',
+                  ? 'bg-white text-gray-900'
+                  : 'bg-gray-50 text-gray-400',
               ].join(' ')}
-              style={{ minHeight: 38 }}
+              style={{
+                minHeight: 38,
+                padding: '10px 15px',
+                border: '1px solid #ddd',
+              }}
             />
           </div>
 
