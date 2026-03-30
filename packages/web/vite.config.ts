@@ -20,10 +20,21 @@ export default defineConfig({
       // accessing the app from a host other than localhost would have their
       // browser attempt to connect to *their own* localhost:1234, which has no
       // YWS server, silently killing all cross-client drawing sync.
+      //
+      // bypass: plain HTTP GETs to /r/<slug> are browser navigations — serve
+      // the SPA's index.html so React Router can render RoomPage.  Only actual
+      // WebSocket upgrades should reach the yws service.
       '/r': {
         target: 'ws://localhost:1234',
         ws: true,
         changeOrigin: true,
+        bypass(req) {
+          if (req.headers['upgrade']?.toLowerCase() !== 'websocket') {
+            // Return the SPA shell; React Router picks up /r/:slug from the
+            // browser's URL and renders the correct page.
+            return '/draw/index.html';
+          }
+        },
       },
     },
   },
