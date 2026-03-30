@@ -319,7 +319,6 @@ export default function DrawCanvas({
   const [isExporting, setIsExporting] = useState(false);
   const [sizeExpanded, setSizeExpanded] = useState(false);
   const sizeGroupRef = useRef<HTMLDivElement>(null);
-  const [sizePickerOpen, setSizePickerOpen] = useState(false);
 
   // Keep refs in sync with state (avoids pointer handler re-creation)
   useEffect(() => { toolRef.current = tool; }, [tool]);
@@ -779,15 +778,15 @@ export default function DrawCanvas({
 
         {/* ── Line / brush width (not shown for fill; collapsed until explicitly opened) ── */}
         {tool !== 'fill' && (
-          <div role="group" aria-label="Brush size" className="flex items-center">
+          <div ref={sizeGroupRef} role="group" aria-label="Brush size" className="flex items-center">
             {/* Collapsed trigger — shows current size dot */}
             <button
               title="Brush size"
-              aria-label={`Brush size (current: ${lineWidth}px). Click to ${sizePickerOpen ? 'collapse' : 'expand'}`}
-              aria-expanded={sizePickerOpen}
-              onClick={() => setSizePickerOpen((o) => !o)}
+              aria-label={`Brush size (current: ${lineWidth}px). Click to ${sizeExpanded ? 'collapse' : 'expand'}`}
+              aria-expanded={sizeExpanded}
+              onClick={() => setSizeExpanded((o) => !o)}
               className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
-                sizePickerOpen ? 'bg-blue-100' : 'hover:bg-gray-100'
+                sizeExpanded ? 'bg-blue-100' : 'hover:bg-gray-100'
               }`}
             >
               <span
@@ -797,7 +796,7 @@ export default function DrawCanvas({
               />
             </button>
             {/* Expanded options */}
-            {sizePickerOpen && LINE_WIDTHS.map((w) => {
+            {sizeExpanded && LINE_WIDTHS.map((w) => {
               const dot = Math.min(4 + w, 16);
               return (
                 <button
@@ -805,7 +804,7 @@ export default function DrawCanvas({
                   title={`Size ${w}px`}
                   aria-label={`Size ${w}px${lineWidth === w ? ' (selected)' : ''}`}
                   aria-pressed={lineWidth === w}
-                  onClick={() => { setLineWidth(w); setSizePickerOpen(false); }}
+                  onClick={() => { setLineWidth(w); setSizeExpanded(false); }}
                   className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
                     lineWidth === w ? 'bg-blue-100' : 'hover:bg-gray-100'
                   }`}
