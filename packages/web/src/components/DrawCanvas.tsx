@@ -317,12 +317,30 @@ export default function DrawCanvas({
   const [lineWidth, setLineWidth] = useState<LineWidthOption>(LINE_WIDTHS[1]);
   const [filled, setFilled] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [sizeExpanded, setSizeExpanded] = useState(false);
+  const sizeGroupRef = useRef<HTMLDivElement>(null);
+  const [sizePickerOpen, setSizePickerOpen] = useState(false);
 
   // Keep refs in sync with state (avoids pointer handler re-creation)
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { lineWidthRef.current = lineWidth; }, [lineWidth]);
   useEffect(() => { filledRef.current = filled; }, [filled]);
+
+  // Collapse size picker when the active tool changes
+  useEffect(() => { setSizeExpanded(false); }, [tool]);
+
+  // Collapse size picker on outside click
+  useEffect(() => {
+    if (!sizeExpanded) return;
+    const handler = (e: MouseEvent) => {
+      if (sizeGroupRef.current && !sizeGroupRef.current.contains(e.target as Node)) {
+        setSizeExpanded(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [sizeExpanded]);
 
   // ── Canvas resize + render ─────────────────────────────────────────────────
 
@@ -759,10 +777,27 @@ export default function DrawCanvas({
 
         <Divider />
 
-        {/* ── Line / brush width (not shown for fill) ── */}
+        {/* ── Line / brush width (not shown for fill; collapsed until explicitly opened) ── */}
         {tool !== 'fill' && (
-          <div role="group" aria-label="Brush size">
-            {LINE_WIDTHS.map((w) => {
+          <div role="group" aria-label="Brush size" className="flex items-center">
+            {/* Collapsed trigger — shows current size dot */}
+            <button
+              title="Brush size"
+              aria-label={`Brush size (current: ${lineWidth}px). Click to ${sizePickerOpen ? 'collapse' : 'expand'}`}
+              aria-expanded={sizePickerOpen}
+              onClick={() => setSizePickerOpen((o) => !o)}
+              className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
+                sizePickerOpen ? 'bg-blue-100' : 'hover:bg-gray-100'
+              }`}
+            >
+              <span
+                className="rounded-full bg-gray-700"
+                style={{ width: Math.min(4 + lineWidth, 16), height: Math.min(4 + lineWidth, 16) }}
+                aria-hidden="true"
+              />
+            </button>
+            {/* Expanded options */}
+            {sizePickerOpen && LINE_WIDTHS.map((w) => {
               const dot = Math.min(4 + w, 16);
               return (
                 <button
@@ -770,7 +805,7 @@ export default function DrawCanvas({
                   title={`Size ${w}px`}
                   aria-label={`Size ${w}px${lineWidth === w ? ' (selected)' : ''}`}
                   aria-pressed={lineWidth === w}
-                  onClick={() => setLineWidth(w)}
+                  onClick={() => { setLineWidth(w); setSizePickerOpen(false); }}
                   className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
                     lineWidth === w ? 'bg-blue-100' : 'hover:bg-gray-100'
                   }`}
