@@ -1,14 +1,23 @@
 @import "tailwindcss";
 
-/* Base resets */
-*, *::before, *::after {
+/* ─── Mobile-safe global reset ─────────────────────────────────────────────
+   Prevents: double-tap text selection, iOS long-press magnifier, tap
+   highlight flashes, and pinch-zoom conflicts with custom interactions.
+   touch-action is overridden per-region below.
+   ────────────────────────────────────────────────────────────────────── */
+* {
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
 }
 
 html, body, #root {
   height: 100%;
-  margin: 0;
-  padding: 0;
 }
 
 body {
@@ -18,4 +27,21 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background-color: #f9fafb;
   color: #111827;
+}
+
+/* ─── touch-action overrides ────────────────────────────────────────────── */
+
+/* Scrollable nav/header — allow horizontal pan */
+header, nav, [role="navigation"] {
+  touch-action: pan-x;
+}
+
+/* Buttons — manipulation allows tap + pinch, blocks double-tap zoom */
+button, [role="button"] {
+  touch-action: manipulation;
+}
+
+/* Canvas and drawing surfaces — suppress all default touch behaviors */
+canvas, [aria-label="Drawing canvas"] {
+  touch-action: none;
 }
