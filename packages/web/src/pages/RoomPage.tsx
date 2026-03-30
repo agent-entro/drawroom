@@ -11,7 +11,16 @@ import ParticipantList from '../components/ParticipantList.tsx';
 // Code-split the canvas bundle
 const DrawCanvas = lazy(() => import('../components/DrawCanvas.tsx'));
 
-const WS_URL = (import.meta.env['VITE_YWS_URL'] as string | undefined) ?? 'ws://localhost:1234';
+// Derive WS URL from the current page host so it works from any hostname
+// (e.g. agent.br-ndt.dev or localhost).  Vite's dev-server proxy forwards
+// ws://<host>:<port>/r/... → ws://localhost:1234/r/... so no hardcoded port
+// is needed.  VITE_YWS_URL overrides this for production deployments where
+// the YWS server is on a separate host or uses TLS (wss://).
+const _defaultWsUrl = () => {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}`;
+};
+const WS_URL = (import.meta.env['VITE_YWS_URL'] as string | undefined) ?? _defaultWsUrl();
 
 export default function RoomPage() {
   const { slug } = useParams<{ slug: string }>();

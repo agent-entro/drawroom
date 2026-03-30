@@ -148,6 +148,7 @@ export function useYjsCanvas({
     // ── Connection status ──────────────────────────────────────────────────
 
     const handleStatus = ({ status: s }: { status: string }) => {
+      console.debug(`[yjs] status → ${s} (room=${roomSlug})`);
       if (s === 'connected') setStatus('online');
       else if (s === 'connecting') setStatus('connecting');
       else setStatus('offline');
@@ -158,7 +159,9 @@ export function useYjsCanvas({
 
     const handleSync = (synced: boolean) => {
       if (!synced) return;
-      setStrokes(Array.from(yStrokes.values()));
+      const loaded = Array.from(yStrokes.values());
+      console.debug(`[yjs] initial sync complete — ${loaded.length} stroke(s) loaded (room=${roomSlug})`);
+      setStrokes(loaded);
       setStatus('online');
     };
     provider.on('sync', handleSync);
@@ -166,7 +169,9 @@ export function useYjsCanvas({
     // ── Remote changes → state ─────────────────────────────────────────────
 
     const handleObserve = () => {
-      setStrokes(Array.from(yStrokes.values()));
+      const all = Array.from(yStrokes.values());
+      console.debug(`[yjs] Y.Map observe fired — ${all.length} stroke(s) total`);
+      setStrokes(all);
     };
     yStrokes.observe(handleObserve);
 
@@ -222,6 +227,7 @@ export function useYjsCanvas({
     const ys = yStrokesRef.current;
     const doc = docRef.current;
     if (!ys || !doc) return;
+    console.debug(`[yjs] addStroke ${stroke.id} — map will have ${ys.size + 1} stroke(s)`);
     doc.transact(() => ys.set(stroke.id, stroke), LOCAL_ORIGIN);
   }, []);
 
