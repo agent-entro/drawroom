@@ -594,7 +594,7 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 
 ---
 
-#### Phase 3: Integrated Chat (Days 11–14)
+#### [DONE] Phase 3: Integrated Chat (Days 11–14)
 
 **Goal:** Chat panel with real-time messaging alongside the canvas.
 
