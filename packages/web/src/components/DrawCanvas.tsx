@@ -1,19 +1,27 @@
 /**
- * DrawCanvas — pixel-paint style collaborative canvas.
+ * DrawCanvas — pixel-paint style HTML5 Canvas with Yjs real-time sync.
  *
- * Tools  : pen (freehand), eraser (pixel erase), fill (flood fill),
- *          rect (rectangle), ellipse
- * Sync   : all ops committed on pointer-up → Y.Map, broadcast via Yjs
- *          Fill ops committed on pointer-down (no drag needed)
- *          Shape previews sent via Yjs awareness during drag
- * Render : ops sorted by createdAt — deterministic replay for fill
- * Undo   : Y.UndoManager per-user
+ * Tools   : pen (smooth freehand), eraser (paints white), fill (flood fill),
+ *           rect (rectangle), ellipse (circle/ellipse)
+ * Sync    : ops committed on pointerup => Y.Map => broadcast to all peers
+ *           fill ops store result spans (not seed) for deterministic replay
+ * Cursors : remote cursors via Yjs awareness rendered as SVG overlay
+ * Undo    : Y.UndoManager per-user (Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z)
+ *
+ * Keyboard: P=pen, E=eraser, F=fill, R=rect, C=circle/ellipse
  */
 
 import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import { getUserId, getUserName } from '../lib/user.ts';
 import { getRandomParticipantColor } from '../lib/colors.ts';
-import { useYjsCanvas, type Stroke, type StrokePoint, type ConnectionStatus } from '../hooks/useYjsCanvas.ts';
+import {
+  useYjsCanvas,
+  type DrawOp,
+  type DrawOpTool,
+  type FillSpan,
+  type StrokePoint,
+  type ConnectionStatus,
+} from '../hooks/useYjsCanvas.ts';
 import { uploadExport } from '../lib/api.ts';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -27,197 +35,128 @@ const PRESET_COLORS = [
 const LINE_WIDTHS = [2, 6, 14] as const;
 type LineWidthOption = (typeof LINE_WIDTHS)[number];
 
-type Tool = 'pen' | 'eraser' | 'fill' | 'rect' | 'ellipse';
+// Flood fill: pixels within this RGBA distance are considered same color.
+const FILL_TOLERANCE = 32;
 
-let _strokeSeq = 0;
+let _opSeq = 0;
 function newOpId(userId: string): string {
-  return `${userId}-${Date.now()}-${++_strokeSeq}`;
+  return `${userId}-${Date.now()}-${++_opSeq}`;
 }
 
-// ── Color parsing ─────────────────────────────────────────────────────────────
+// ── Color utilities ───────────────────────────────────────────────────────────
 
-// Cached 1×1 canvas for CSS color → RGBA conversion
-let _colorCanvas: HTMLCanvasElement | null = null;
-let _colorCtx: CanvasRenderingContext2D | null = null;
-
-function parseColorToRGBA(color: string): [number, number, number, number] {
-  if (!_colorCanvas) {
-    _colorCanvas = document.createElement('canvas');
-    _colorCanvas.width = _colorCanvas.height = 1;
-    _colorCtx = _colorCanvas.getContext('2d')!;
-  }
-  const ctx = _colorCtx!;
-  // Reset to transparent before sampling (handles semi-transparent colors)
-  ctx.clearRect(0, 0, 1, 1);
-  ctx.fillStyle = color;
-  ctx.fillRect(0, 0, 1, 1);
-  const d = ctx.getImageData(0, 0, 1, 1).data;
-  return [d[0]!, d[1]!, d[2]!, d[3]!];
+/** Parse a CSS hex color (#rrggbb or #rgb) to [r, g, b]. */
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace('#', '');
+  if (h.length === 3) h = h[0]! + h[0]! + h[1]! + h[1]! + h[2]! + h[2]!;
+  return [
+    parseInt(h.slice(0, 2), 16),
+    parseInt(h.slice(2, 4), 16),
+    parseInt(h.slice(4, 6), 16),
+  ];
 }
 
 // ── Flood fill ────────────────────────────────────────────────────────────────
 
 /**
- * Stack-based DFS flood fill on raw ImageData.
- * Fills contiguous pixels matching the target color at (startX, startY).
- * Mutates `data` in place.
+ * Flood fill from (seedX, seedY) on the canvas.
+ * Returns the filled region as horizontal spans for compact Yjs storage.
+ * Spans are the *result* of the fill — replaying them is CRDT-safe.
  */
-function floodFill(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  startX: number,
-  startY: number,
-  fillR: number, fillG: number, fillB: number, fillA: number,
-): void {
-  const sx = Math.round(startX);
-  const sy = Math.round(startY);
-  if (sx < 0 || sy < 0 || sx >= width || sy >= height) return;
+function computeFloodFill(
+  canvas: HTMLCanvasElement,
+  seedX: number,
+  seedY: number,
+  fillColor: string,
+  tolerance: number = FILL_TOLERANCE,
+): FillSpan[] {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return [];
 
-  const idx0 = (sy * width + sx) * 4;
-  const targetR = data[idx0]!;
-  const targetG = data[idx0 + 1]!;
-  const targetB = data[idx0 + 2]!;
-  const targetA = data[idx0 + 3]!;
+  const w = canvas.width;
+  const h = canvas.height;
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
 
-  // Nothing to do if already the fill color
-  if (targetR === fillR && targetG === fillG && targetB === fillB && targetA === fillA) return;
+  const ix = Math.max(0, Math.min(w - 1, Math.floor(seedX)));
+  const iy = Math.max(0, Math.min(h - 1, Math.floor(seedY)));
+  const si = (iy * w + ix) * 4;
+  const tr = data[si]!;
+  const tg = data[si + 1]!;
+  const tb = data[si + 2]!;
 
-  const matches = (i: number): boolean =>
-    data[i] === targetR &&
-    data[i + 1] === targetG &&
-    data[i + 2] === targetB &&
-    data[i + 3] === targetA;
+  // Bail if seed pixel already matches fill color
+  const [fr, fg, fb] = hexToRgb(fillColor);
+  if (
+    Math.abs(tr - fr) <= tolerance &&
+    Math.abs(tg - fg) <= tolerance &&
+    Math.abs(tb - fb) <= tolerance
+  ) {
+    return [];
+  }
 
-  // Stack holds flat pixel indices (not *4 multiplied)
-  const stack: number[] = [sy * width + sx];
+  const visited = new Uint8Array(w * h);
+  const stack: number[] = [iy * w + ix];
 
   while (stack.length > 0) {
     const pos = stack.pop()!;
+    if (visited[pos]) continue;
+
+    const x = pos % w;
+    const y = (pos / w) | 0;
     const i = pos * 4;
-    if (!matches(i)) continue; // already filled or wrong color
 
-    // Fill pixel
-    data[i] = fillR;
-    data[i + 1] = fillG;
-    data[i + 2] = fillB;
-    data[i + 3] = fillA;
+    if (
+      Math.abs(data[i]! - tr) > tolerance ||
+      Math.abs(data[i + 1]! - tg) > tolerance ||
+      Math.abs(data[i + 2]! - tb) > tolerance
+    ) {
+      continue;
+    }
 
-    const px = pos % width;
-    const py = (pos / width) | 0;
-
-    if (px > 0)          stack.push(pos - 1);
-    if (px < width - 1)  stack.push(pos + 1);
-    if (py > 0)          stack.push(pos - width);
-    if (py < height - 1) stack.push(pos + width);
-  }
-}
-
-// ── Op rendering ──────────────────────────────────────────────────────────────
-
-function renderPenOp(ctx: CanvasRenderingContext2D, op: Stroke): void {
-  const { points, color, lineWidth } = op;
-  if (!points || points.length === 0) return;
-
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
-  ctx.lineWidth = lineWidth;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.globalCompositeOperation = 'source-over';
-
-  if (points.length === 1) {
-    ctx.beginPath();
-    ctx.arc(points[0]!.x, points[0]!.y, lineWidth / 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-    return;
+    visited[pos] = 1;
+    if (x > 0) stack.push(pos - 1);
+    if (x < w - 1) stack.push(pos + 1);
+    if (y > 0) stack.push(pos - w);
+    if (y < h - 1) stack.push(pos + w);
   }
 
-  ctx.beginPath();
-  ctx.moveTo(points[0]!.x, points[0]!.y);
-  for (let i = 1; i < points.length - 1; i++) {
-    const cur = points[i]!;
-    const next = points[i + 1]!;
-    ctx.quadraticCurveTo(cur.x, cur.y, (cur.x + next.x) / 2, (cur.y + next.y) / 2);
+  // Convert visited pixels to run-length spans
+  const spans: FillSpan[] = [];
+  for (let y = 0; y < h; y++) {
+    let spanStart = -1;
+    for (let x = 0; x < w; x++) {
+      const v = visited[y * w + x];
+      if (v && spanStart === -1) {
+        spanStart = x;
+      } else if (!v && spanStart !== -1) {
+        spans.push({ y, x1: spanStart, x2: x - 1 });
+        spanStart = -1;
+      }
+    }
+    if (spanStart !== -1) {
+      spans.push({ y, x1: spanStart, x2: w - 1 });
+      spanStart = -1;
+    }
   }
-  ctx.lineTo(points[points.length - 1]!.x, points[points.length - 1]!.y);
-  ctx.stroke();
-  ctx.restore();
+
+  return spans;
 }
 
-function renderEraserOp(ctx: CanvasRenderingContext2D, op: Stroke): void {
-  // Eraser = white paint (pixel erase)
-  renderPenOp(ctx, { ...op, color: '#ffffff' });
-}
+// ── Canvas rendering ──────────────────────────────────────────────────────────
 
-function renderRectOp(ctx: CanvasRenderingContext2D, op: Stroke): void {
-  const { shapeX = 0, shapeY = 0, shapeW = 0, shapeH = 0, shapeFilled, color, lineWidth } = op;
-  if (shapeW === 0 && shapeH === 0) return;
-
-  // Normalize negative dimensions (drag up/left)
-  const x = shapeW >= 0 ? shapeX : shapeX + shapeW;
-  const y = shapeH >= 0 ? shapeY : shapeY + shapeH;
-  const w = Math.abs(shapeW);
-  const h = Math.abs(shapeH);
-
-  ctx.save();
-  if (shapeFilled) {
-    ctx.fillStyle = color;
-    ctx.fillRect(x, y, w, h);
-  } else {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth;
-    ctx.strokeRect(x, y, w, h);
-  }
-  ctx.restore();
-}
-
-function renderEllipseOp(ctx: CanvasRenderingContext2D, op: Stroke): void {
-  const { shapeX = 0, shapeY = 0, shapeW = 0, shapeH = 0, shapeFilled, color, lineWidth } = op;
-  if (shapeW === 0 && shapeH === 0) return;
-
-  const cx = shapeX + shapeW / 2;
-  const cy = shapeY + shapeH / 2;
-  const rx = Math.abs(shapeW / 2);
-  const ry = Math.abs(shapeH / 2);
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-  if (shapeFilled) {
-    ctx.fillStyle = color;
-    ctx.fill();
-  } else {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth;
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-/**
- * Render a single op onto ctx. For fill ops, reads and writes ImageData.
- * `w` and `h` are canvas pixel dimensions (for getImageData).
- */
-function renderOp(ctx: CanvasRenderingContext2D, w: number, h: number, op: Stroke): void {
+function renderOp(ctx: CanvasRenderingContext2D, op: DrawOp): void {
   switch (op.tool) {
     case 'pen':
       renderPenOp(ctx, op);
       break;
     case 'eraser':
-      renderEraserOp(ctx, op);
+      // Eraser paints white — same as pen but hardcoded color
+      renderPenOp(ctx, { ...op, color: '#ffffff' });
       break;
-    case 'fill': {
-      if (op.fillX !== undefined && op.fillY !== undefined) {
-        const imageData = ctx.getImageData(0, 0, w, h);
-        const [fr, fg, fb, fa] = parseColorToRGBA(op.color);
-        floodFill(imageData.data, w, h, op.fillX, op.fillY, fr, fg, fb, fa);
-        ctx.putImageData(imageData, 0, 0);
-      }
+    case 'fill':
+      renderFillOp(ctx, op);
       break;
-    }
     case 'rect':
       renderRectOp(ctx, op);
       break;
@@ -227,6 +166,89 @@ function renderOp(ctx: CanvasRenderingContext2D, w: number, h: number, op: Strok
   }
 }
 
+function renderPenOp(ctx: CanvasRenderingContext2D, op: DrawOp): void {
+  const points = op.points ?? [];
+  if (points.length === 0) return;
+
+  ctx.save();
+  ctx.strokeStyle = op.color;
+  ctx.fillStyle = op.color;
+  ctx.lineWidth = op.lineWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.globalCompositeOperation = 'source-over';
+
+  if (points.length === 1) {
+    ctx.beginPath();
+    ctx.arc(points[0]!.x, points[0]!.y, op.lineWidth / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(points[0]!.x, points[0]!.y);
+
+  // Quadratic bezier through midpoints for smooth curves
+  for (let i = 1; i < points.length - 1; i++) {
+    const cur = points[i]!;
+    const next = points[i + 1]!;
+    const mx = (cur.x + next.x) / 2;
+    const my = (cur.y + next.y) / 2;
+    ctx.quadraticCurveTo(cur.x, cur.y, mx, my);
+  }
+  ctx.lineTo(points[points.length - 1]!.x, points[points.length - 1]!.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function renderFillOp(ctx: CanvasRenderingContext2D, op: DrawOp): void {
+  const spans = op.spans;
+  if (!spans || spans.length === 0) return;
+  ctx.fillStyle = op.color;
+  for (const span of spans) {
+    ctx.fillRect(span.x1, span.y, span.x2 - span.x1 + 1, 1);
+  }
+}
+
+function renderRectOp(ctx: CanvasRenderingContext2D, op: DrawOp): void {
+  if (op.x1 === undefined || op.y1 === undefined || op.x2 === undefined || op.y2 === undefined) return;
+  const x = Math.min(op.x1, op.x2);
+  const y = Math.min(op.y1, op.y2);
+  const w = Math.abs(op.x2 - op.x1);
+  const h = Math.abs(op.y2 - op.y1);
+  if (w === 0 || h === 0) return;
+  ctx.save();
+  ctx.strokeStyle = op.color;
+  ctx.fillStyle = op.color;
+  ctx.lineWidth = op.lineWidth;
+  ctx.lineJoin = 'miter';
+  if (op.filled) {
+    ctx.fillRect(x, y, w, h);
+  } else {
+    ctx.strokeRect(x, y, w, h);
+  }
+  ctx.restore();
+}
+
+function renderEllipseOp(ctx: CanvasRenderingContext2D, op: DrawOp): void {
+  if (op.x1 === undefined || op.y1 === undefined || op.x2 === undefined || op.y2 === undefined) return;
+  const cx = (op.x1 + op.x2) / 2;
+  const cy = (op.y1 + op.y2) / 2;
+  const rx = Math.abs(op.x2 - op.x1) / 2;
+  const ry = Math.abs(op.y2 - op.y1) / 2;
+  if (rx === 0 || ry === 0) return;
+  ctx.save();
+  ctx.strokeStyle = op.color;
+  ctx.fillStyle = op.color;
+  ctx.lineWidth = op.lineWidth;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  if (op.filled) ctx.fill();
+  else ctx.stroke();
+  ctx.restore();
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface DrawCanvasProps {
@@ -234,8 +256,15 @@ interface DrawCanvasProps {
   wsUrl?: string;
   userName?: string;
   userColor?: string;
+  /** Passed through to Yjs awareness so the YWS server can drive DB heartbeats */
   participantId?: string;
+  /** Called whenever the Yjs WebSocket connection status changes */
   onStatusChange?: (status: ConnectionStatus) => void;
+  /**
+   * Called whenever any peer's Yjs awareness changes (join/leave/cursor).
+   * Lets the parent refresh the participant list immediately without waiting
+   * for the next poll tick.
+   */
   onParticipantsRefresh?: () => void;
 }
 
@@ -250,6 +279,7 @@ export default function DrawCanvas({
 }: DrawCanvasProps) {
   const userId = getUserId();
   const userName = userNameProp ?? getUserName();
+  // Stable color ref — avoids re-creating the Yjs hook on every render
   const userColor = useRef(userColorProp ?? getRandomParticipantColor()).current;
 
   const {
@@ -260,38 +290,41 @@ export default function DrawCanvas({
     onAwarenessChange: onParticipantsRefresh,
   });
 
-  useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
+  // Notify parent of WS status changes (used to pause HTTP heartbeat polling)
+  useEffect(() => {
+    onStatusChange?.(status);
+  }, [status, onStatusChange]);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Drawing state in refs to avoid stale closures in pointer handlers
   const isDrawingRef = useRef(false);
-  const activeStrokeRef = useRef<Stroke | null>(null);
-  const shapeStartRef = useRef<StrokePoint | null>(null);
-  const strokesRef = useRef<Stroke[]>(strokes);
-  const remoteActiveStrokesRef = useRef<Stroke[]>([]);
-  const toolRef = useRef<Tool>('pen');
+  const activeOpRef = useRef<DrawOp | null>(null);
+  const strokesRef = useRef<DrawOp[]>(strokes);
+  const remoteActiveStrokesRef = useRef<DrawOp[]>([]);
+  const toolRef = useRef<DrawOpTool>('pen');
   const colorRef = useRef<string>(PRESET_COLORS[0]);
   const lineWidthRef = useRef<LineWidthOption>(LINE_WIDTHS[1]);
-  const shapeFilledRef = useRef<boolean>(true);
+  const filledRef = useRef<boolean>(false);
 
   // ── UI state ───────────────────────────────────────────────────────────────
 
-  const [tool, setTool] = useState<Tool>('pen');
+  const [tool, setTool] = useState<DrawOpTool>('pen');
   const [color, setColor] = useState<string>(PRESET_COLORS[0]);
   const [lineWidth, setLineWidth] = useState<LineWidthOption>(LINE_WIDTHS[1]);
-  const [shapeFilled, setShapeFilled] = useState<boolean>(true);
+  const [filled, setFilled] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  // Keep refs in sync (avoids pointer handler re-creation)
+  // Keep refs in sync with state (avoids pointer handler re-creation)
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { lineWidthRef.current = lineWidth; }, [lineWidth]);
-  useEffect(() => { shapeFilledRef.current = shapeFilled; }, [shapeFilled]);
+  useEffect(() => { filledRef.current = filled; }, [filled]);
 
-  // ── Canvas render ──────────────────────────────────────────────────────────
+  // ── Canvas resize + render ─────────────────────────────────────────────────
 
   const renderAll = useCallback(() => {
     const canvas = canvasRef.current;
@@ -299,62 +332,49 @@ export default function DrawCanvas({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const w = canvas.width;
-    const h = canvas.height;
-
-    ctx.clearRect(0, 0, w, h);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, w, h);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Sort by createdAt for deterministic fill replay
-    const sorted = [...strokesRef.current].sort((a, b) => {
-      const diff = (a.createdAt ?? 0) - (b.createdAt ?? 0);
-      return diff !== 0 ? diff : a.id < b.id ? -1 : 1;
-    });
-
-    for (const op of sorted) {
-      renderOp(ctx, w, h, op);
+    for (const op of strokesRef.current) {
+      renderOp(ctx, op);
     }
-
-    // Remote active strokes (in-progress, from peers)
     for (const op of remoteActiveStrokesRef.current) {
-      ctx.globalAlpha = op.tool === 'rect' || op.tool === 'ellipse' ? 0.6 : 1.0;
-      renderOp(ctx, w, h, op);
-      ctx.globalAlpha = 1.0;
+      renderOp(ctx, op);
     }
-
-    // Local active stroke / shape preview
-    if (activeStrokeRef.current) {
-      const isShape = activeStrokeRef.current.tool === 'rect' || activeStrokeRef.current.tool === 'ellipse';
-      ctx.globalAlpha = isShape ? 0.6 : 1.0;
-      renderOp(ctx, w, h, activeStrokeRef.current);
-      ctx.globalAlpha = 1.0;
+    if (activeOpRef.current) {
+      renderOp(ctx, activeOpRef.current);
     }
-  }, []);
+  }, []); // reads from refs — no reactive deps needed
 
   const renderAllRef = useRef(renderAll);
   renderAllRef.current = renderAll;
 
+  // Resize canvas to container dimensions, then re-render.
   useLayoutEffect(() => {
     const container = containerRef.current;
     const canvas = canvasRef.current;
     if (!container || !canvas) return;
+
     const doResize = () => {
       canvas.width = container.clientWidth;
       canvas.height = container.clientHeight;
       renderAllRef.current();
     };
+
     doResize();
     const ro = new ResizeObserver(doResize);
     ro.observe(container);
     return () => ro.disconnect();
   }, []);
 
+  // Re-render when committed ops change
   useEffect(() => {
     strokesRef.current = strokes;
     renderAll();
   }, [strokes, renderAll]);
 
+  // Re-render when remote active ops change
   useEffect(() => {
     remoteActiveStrokesRef.current = remoteActiveStrokes;
     renderAll();
@@ -373,64 +393,55 @@ export default function DrawCanvas({
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (e.button !== 0 && e.pointerType === 'mouse') return;
       e.currentTarget.setPointerCapture(e.pointerId);
-      isDrawingRef.current = true;
       const pos = getCanvasPos(e);
-      const now = Date.now();
+      const currentTool = toolRef.current;
 
-      switch (toolRef.current) {
-        case 'pen':
-        case 'eraser':
-          activeStrokeRef.current = {
-            id: newOpId(userId),
-            tool: toolRef.current,
-            color: colorRef.current,
-            lineWidth: lineWidthRef.current,
-            userId,
-            points: [pos],
-            complete: false,
-            createdAt: now,
-          };
-          renderAll();
-          break;
-
-        case 'fill':
-          // Commit immediately — no drag needed
+      if (currentTool === 'fill') {
+        // Fill is instantaneous — run flood fill and commit immediately
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const spans = computeFloodFill(canvas, pos.x, pos.y, colorRef.current);
+        if (spans.length > 0) {
           addStroke({
             id: newOpId(userId),
             tool: 'fill',
             color: colorRef.current,
-            lineWidth: lineWidthRef.current,
+            lineWidth: 1,
             userId,
-            points: [],
             complete: true,
-            createdAt: now,
-            fillX: pos.x,
-            fillY: pos.y,
+            spans,
           });
-          isDrawingRef.current = false;
-          break;
-
-        case 'rect':
-        case 'ellipse':
-          shapeStartRef.current = pos;
-          activeStrokeRef.current = {
-            id: newOpId(userId),
-            tool: toolRef.current,
-            color: colorRef.current,
-            lineWidth: lineWidthRef.current,
-            userId,
-            points: [],
-            complete: false,
-            createdAt: now,
-            shapeX: pos.x,
-            shapeY: pos.y,
-            shapeW: 0,
-            shapeH: 0,
-            shapeFilled: shapeFilledRef.current,
-          };
-          renderAll();
-          break;
+        }
+        return; // no drag phase for fill
       }
+
+      isDrawingRef.current = true;
+
+      if (currentTool === 'pen' || currentTool === 'eraser') {
+        activeOpRef.current = {
+          id: newOpId(userId),
+          tool: currentTool,
+          color: colorRef.current,
+          lineWidth: lineWidthRef.current,
+          userId,
+          complete: false,
+          points: [pos],
+        };
+      } else {
+        // rect / ellipse — store start corner
+        activeOpRef.current = {
+          id: newOpId(userId),
+          tool: currentTool,
+          color: colorRef.current,
+          lineWidth: lineWidthRef.current,
+          userId,
+          complete: false,
+          x1: pos.x, y1: pos.y,
+          x2: pos.x, y2: pos.y,
+          filled: filledRef.current,
+        };
+      }
+      renderAll();
     },
     [userId, addStroke, renderAll],
   );
@@ -440,39 +451,25 @@ export default function DrawCanvas({
       const pos = getCanvasPos(e);
       setMyCursor(pos);
 
-      if (!isDrawingRef.current) return;
+      if (!isDrawingRef.current || !activeOpRef.current) return;
 
-      switch (toolRef.current) {
-        case 'pen':
-        case 'eraser':
-          if (activeStrokeRef.current) {
-            activeStrokeRef.current = {
-              ...activeStrokeRef.current,
-              points: [...activeStrokeRef.current.points, pos],
-            };
-            setMyActiveStroke(activeStrokeRef.current);
-            renderAll();
-          }
-          break;
+      const currentTool = toolRef.current;
 
-        case 'rect':
-        case 'ellipse': {
-          const start = shapeStartRef.current;
-          if (activeStrokeRef.current && start) {
-            activeStrokeRef.current = {
-              ...activeStrokeRef.current,
-              shapeW: pos.x - start.x,
-              shapeH: pos.y - start.y,
-            };
-            setMyActiveStroke(activeStrokeRef.current);
-            renderAll();
-          }
-          break;
-        }
-
-        case 'fill':
-          // no drag behaviour for fill
-          break;
+      if (currentTool === 'pen' || currentTool === 'eraser') {
+        activeOpRef.current = {
+          ...activeOpRef.current,
+          points: [...(activeOpRef.current.points ?? []), pos],
+        };
+        setMyActiveStroke(activeOpRef.current);
+        renderAll();
+      } else if (currentTool === 'rect' || currentTool === 'ellipse') {
+        activeOpRef.current = {
+          ...activeOpRef.current,
+          x2: pos.x,
+          y2: pos.y,
+        };
+        setMyActiveStroke(activeOpRef.current);
+        renderAll();
       }
     },
     [setMyCursor, setMyActiveStroke, renderAll],
@@ -480,10 +477,9 @@ export default function DrawCanvas({
 
   const handlePointerUp = useCallback(() => {
     isDrawingRef.current = false;
-    if (activeStrokeRef.current) {
-      addStroke({ ...activeStrokeRef.current, complete: true });
-      activeStrokeRef.current = null;
-      shapeStartRef.current = null;
+    if (activeOpRef.current) {
+      addStroke({ ...activeOpRef.current, complete: true });
+      activeOpRef.current = null;
       setMyActiveStroke(null);
       renderAll();
     }
@@ -501,11 +497,13 @@ export default function DrawCanvas({
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       else if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
-      else if (!mod && e.key === 'p') setTool('pen');
-      else if (!mod && e.key === 'e') setTool('eraser');
-      else if (!mod && e.key === 'f') setTool('fill');
-      else if (!mod && e.key === 'r') setTool('rect');
-      else if (!mod && e.key === 'o') setTool('ellipse');
+      else if (!mod) {
+        if (e.key === 'p') setTool('pen');
+        else if (e.key === 'e') setTool('eraser');
+        else if (e.key === 'f') setTool('fill');
+        else if (e.key === 'r') setTool('rect');
+        else if (e.key === 'c') setTool('ellipse');
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -518,18 +516,27 @@ export default function DrawCanvas({
     if (!canvas || isExporting) return;
     setIsExporting(true);
     try {
-      const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
+      const blob = await new Promise<Blob | null>((res) =>
+        canvas.toBlob(res, 'image/png'),
+      );
       if (!blob) throw new Error('Canvas export failed');
 
       if (participantId) {
         try {
-          const { downloadUrl } = await uploadExport({ roomSlug, participantId, format: 'png', blob });
+          const { downloadUrl } = await uploadExport({
+            roomSlug,
+            participantId,
+            format: 'png',
+            blob,
+          });
           const a = document.createElement('a');
           a.href = downloadUrl;
           a.download = `drawroom-${roomSlug}.png`;
           a.click();
           return;
-        } catch { /* fall through to local download */ }
+        } catch {
+          // Fall through to local download
+        }
       }
 
       const url = URL.createObjectURL(blob);
@@ -545,21 +552,39 @@ export default function DrawCanvas({
     }
   }, [isExporting, participantId, roomSlug]);
 
-  // ── Cursor style ───────────────────────────────────────────────────────────
+  // ── Derived styles ─────────────────────────────────────────────────────────
 
-  const canvasCursor = (() => {
-    if (tool === 'eraser') {
-      const r = Math.max(lineWidth, 4);
-      const d = r * 2;
-      const svg = encodeURIComponent(
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${d}" height="${d}">` +
-        `<circle cx="${r}" cy="${r}" r="${r - 1}" fill="none" stroke="#555" stroke-width="1.5"/></svg>`,
-      );
-      return `url("data:image/svg+xml,${svg}") ${r} ${r}, crosshair`;
-    }
-    if (tool === 'fill') return 'cell';
-    return 'crosshair';
-  })();
+  const eraserSize = lineWidth * 2 + 4;
+  const eraserCursor = encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${eraserSize}" height="${eraserSize}">` +
+    `<rect x="1" y="1" width="${eraserSize - 2}" height="${eraserSize - 2}" ` +
+    `rx="2" fill="white" stroke="#555" stroke-width="1.5"/></svg>`,
+  );
+
+  // Paint-bucket cursor.
+  // Hotspot (3, 12) sits at the left tip of the bucket shape (viewBox 0 0 24 24).
+  // White outline stroke painted first so the icon is legible on any canvas color.
+  const fillCursor = 'url("data:image/svg+xml,' + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">` +
+    // white halo so the dark icon reads on any canvas background
+    `<path d="M19 11l-8-8-8.5 8.5a5.5 5.5 0 0 0 7.78 7.78L19 11z" fill="none" stroke="white" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>` +
+    `<path d="M20 13c0 0 2 2 2 4s-2 4-2 4" fill="none" stroke="white" stroke-width="4" stroke-linecap="round"/>` +
+    // foreground icon in dark ink
+    `<path d="M19 11l-8-8-8.5 8.5a5.5 5.5 0 0 0 7.78 7.78L19 11z" fill="none" stroke="#1a1a1a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` +
+    `<path d="M20 13c0 0 2 2 2 4s-2 4-2 4" fill="none" stroke="#1a1a1a" stroke-width="2" stroke-linecap="round"/>` +
+    `</svg>`,
+  ) + '") 3 12, crosshair';
+
+  const shapeCursor = 'crosshair';
+
+  const canvasCursor =
+    tool === 'eraser'
+      ? `url("data:image/svg+xml,${eraserCursor}") ${eraserSize / 2} ${eraserSize / 2}, crosshair`
+      : tool === 'fill'
+      ? fillCursor
+      : tool === 'rect' || tool === 'ellipse'
+      ? shapeCursor
+      : 'crosshair';
 
   const statusColor =
     status === 'online' ? '#22c55e' : status === 'connecting' ? '#f59e0b' : '#ef4444';
@@ -584,7 +609,7 @@ export default function DrawCanvas({
         onPointerLeave={handlePointerLeave}
       />
 
-      {/* Remote cursors */}
+      {/* Remote cursors — SVG overlay, no pointer events */}
       <svg
         aria-hidden="true"
         className="pointer-events-none absolute inset-0"
@@ -595,16 +620,26 @@ export default function DrawCanvas({
           .map((c) => {
             const cx = c.cursor!.x;
             const cy = c.cursor!.y;
-            const nw = c.userName.length * 7 + 12;
+            const nameWidth = c.userName.length * 7 + 12;
             return (
               <g key={c.clientId} transform={`translate(${cx},${cy})`}>
                 <path
                   d="M0 0L0 14L4 10L7 18L9 17L6 9L12 9Z"
-                  fill={c.userColor} stroke="white" strokeWidth="1.5"
+                  fill={c.userColor}
+                  stroke="white"
+                  strokeWidth="1.5"
                 />
-                <rect x="13" y="-3" width={nw} height="19" rx="4" fill={c.userColor} />
-                <text x="17" y="12" fontSize="11" fill="white"
-                  fontFamily="system-ui, -apple-system, sans-serif" fontWeight="500">
+                <rect
+                  x="13" y="-3"
+                  width={nameWidth} height="19"
+                  rx="4" fill={c.userColor}
+                />
+                <text
+                  x="17" y="12"
+                  fontSize="11" fill="white"
+                  fontFamily="system-ui, -apple-system, sans-serif"
+                  fontWeight="500"
+                >
                   {c.userName}
                 </text>
               </g>
@@ -618,51 +653,74 @@ export default function DrawCanvas({
         aria-label="Drawing tools"
         className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-2 shadow-lg"
       >
-        {/* ── Tools ── */}
-        <ToolBtn active={tool === 'pen'} title="Pen (P)" onClick={() => setTool('pen')}>
-          <IconPen />
-        </ToolBtn>
-        <ToolBtn active={tool === 'eraser'} title="Eraser (E)" onClick={() => setTool('eraser')}>
-          <IconEraser />
-        </ToolBtn>
-        <ToolBtn active={tool === 'fill'} title="Fill (F)" onClick={() => setTool('fill')}>
-          <IconFill />
-        </ToolBtn>
-        <ToolBtn active={tool === 'rect'} title="Rectangle (R)" onClick={() => setTool('rect')}>
-          <IconRect />
-        </ToolBtn>
-        <ToolBtn active={tool === 'ellipse'} title="Ellipse (O)" onClick={() => setTool('ellipse')}>
-          <IconEllipse />
-        </ToolBtn>
+        {/* ── Tool selection ── */}
+        <div role="group" aria-label="Tool selection" className="flex items-center gap-0.5">
+          <ToolBtn active={tool === 'pen'} title="Pen (P)" aria-label="Pen tool (P)" onClick={() => setTool('pen')}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+            </svg>
+          </ToolBtn>
+
+          <ToolBtn active={tool === 'eraser'} title="Eraser (E)" aria-label="Eraser tool (E)" onClick={() => setTool('eraser')}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/>
+              <path d="M22 21H7"/><path d="m5 11 9 9"/>
+            </svg>
+          </ToolBtn>
+
+          <ToolBtn active={tool === 'fill'} title="Fill (F)" aria-label="Fill tool (F)" onClick={() => setTool('fill')}>
+            {/* Paint bucket icon */}
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M19 11l-8-8-8.5 8.5a5.5 5.5 0 0 0 7.78 7.78L19 11z"/>
+              <path d="M20 13c0 0 2 2 2 4s-2 4-2 4"/>
+            </svg>
+          </ToolBtn>
+
+          <ToolBtn active={tool === 'rect'} title="Rectangle (R)" aria-label="Rectangle tool (R)" onClick={() => setTool('rect')}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="1"/>
+            </svg>
+          </ToolBtn>
+
+          <ToolBtn active={tool === 'ellipse'} title="Ellipse/Circle (C)" aria-label="Ellipse tool (C)" onClick={() => setTool('ellipse')}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <ellipse cx="12" cy="12" rx="10" ry="6"/>
+            </svg>
+          </ToolBtn>
+        </div>
+
+        {/* ── Filled / outlined toggle (shape tools only) ── */}
+        {isShapeTool && (
+          <>
+            <Divider />
+            <div role="group" aria-label="Shape fill mode" className="flex items-center gap-0.5">
+              <ToolBtn
+                active={!filled}
+                title="Outlined shape"
+                aria-label="Outlined shape"
+                onClick={() => setFilled(false)}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                  <rect x="1.5" y="1.5" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"/>
+                </svg>
+              </ToolBtn>
+              <ToolBtn
+                active={filled}
+                title="Filled shape"
+                aria-label="Filled shape"
+                onClick={() => setFilled(true)}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                  <rect x="1.5" y="1.5" width="11" height="11" fill="currentColor"/>
+                </svg>
+              </ToolBtn>
+            </div>
+          </>
+        )}
 
         <Divider />
 
-        {/* ── Shape fill/outline toggle (always visible, grayed when not a shape tool) ── */}
-        <button
-          title={shapeFilled ? 'Shapes: filled (click for outline)' : 'Shapes: outline (click for filled)'}
-          aria-label={shapeFilled ? 'Switch to outline shapes' : 'Switch to filled shapes'}
-          onClick={() => setShapeFilled((f) => !f)}
-          className={[
-            'flex h-7 items-center gap-1 rounded-lg px-1.5 text-xs font-medium transition-colors',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-            isShapeTool
-              ? shapeFilled
-                ? 'bg-blue-100 text-blue-700'
-                : 'bg-gray-100 text-gray-700'
-              : 'text-gray-300 cursor-default',
-          ].join(' ')}
-          disabled={!isShapeTool}
-        >
-          {shapeFilled
-            ? <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><rect x="1" y="1" width="11" height="11" fill="currentColor" rx="1"/></svg>
-            : <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><rect x="1" y="1" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" rx="1"/></svg>
-          }
-          <span>{shapeFilled ? 'Fill' : 'Line'}</span>
-        </button>
-
-        <Divider />
-
-        {/* ── Colors ── */}
+        {/* ── Color swatches ── */}
         <div className="flex items-center gap-1" role="group" aria-label="Color palette">
           {PRESET_COLORS.map((c) => (
             <button
@@ -670,7 +728,7 @@ export default function DrawCanvas({
               title={c}
               aria-label={`Color ${c}${color === c ? ' (selected)' : ''}`}
               aria-pressed={color === c}
-              onClick={() => setColor(c)}
+              onClick={() => { setColor(c); if (tool === 'fill' || tool === 'rect' || tool === 'ellipse') { /* keep tool */ } else setTool('pen'); }}
               className="h-5 w-5 rounded-full border-2 transition-transform hover:scale-110 focus:outline-none"
               style={{
                 backgroundColor: c,
@@ -679,7 +737,7 @@ export default function DrawCanvas({
               }}
             />
           ))}
-          {/* Custom color picker */}
+          {/* Custom color */}
           <label
             title="Custom color"
             aria-label="Custom color picker"
@@ -693,7 +751,7 @@ export default function DrawCanvas({
               type="color"
               value={color}
               aria-label="Custom color"
-              onChange={(e) => setColor(e.target.value)}
+              onChange={(e) => { setColor(e.target.value); }}
               className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
             />
           </label>
@@ -701,36 +759,38 @@ export default function DrawCanvas({
 
         <Divider />
 
-        {/* ── Line width (also controls eraser size) ── */}
-        <div role="group" aria-label="Stroke width">
-          {LINE_WIDTHS.map((w) => {
-            const dot = Math.min(4 + w, 16);
-            return (
-              <button
-                key={w}
-                title={`Width ${w}px`}
-                aria-label={`Width ${w}px${lineWidth === w ? ' (selected)' : ''}`}
-                aria-pressed={lineWidth === w}
-                onClick={() => setLineWidth(w)}
-                className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
-                  lineWidth === w ? 'bg-blue-100' : 'hover:bg-gray-100'
-                }`}
-              >
-                <span className="rounded-full bg-gray-700" style={{ width: dot, height: dot }} aria-hidden="true" />
-              </button>
-            );
-          })}
-        </div>
+        {/* ── Line / brush width (not shown for fill) ── */}
+        {tool !== 'fill' && (
+          <div role="group" aria-label="Brush size">
+            {LINE_WIDTHS.map((w) => {
+              const dot = Math.min(4 + w, 16);
+              return (
+                <button
+                  key={w}
+                  title={`Size ${w}px`}
+                  aria-label={`Size ${w}px${lineWidth === w ? ' (selected)' : ''}`}
+                  aria-pressed={lineWidth === w}
+                  onClick={() => setLineWidth(w)}
+                  className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
+                    lineWidth === w ? 'bg-blue-100' : 'hover:bg-gray-100'
+                  }`}
+                >
+                  <span className="rounded-full bg-gray-700" style={{ width: dot, height: dot }} aria-hidden="true" />
+                </button>
+              );
+            })}
+          </div>
+        )}
 
-        <Divider />
+        {tool !== 'fill' && <Divider />}
 
         {/* ── Undo / Redo ── */}
-        <ToolBtn title="Undo (Ctrl+Z)" onClick={undo}>
+        <ToolBtn title="Undo (Ctrl+Z)" aria-label="Undo (Ctrl+Z)" onClick={undo}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M3 7v6h6"/><path d="M3 13A9 9 0 1 0 6 6.7L3 13"/>
           </svg>
         </ToolBtn>
-        <ToolBtn title="Redo (Ctrl+Shift+Z)" onClick={redo}>
+        <ToolBtn title="Redo (Ctrl+Shift+Z)" aria-label="Redo (Ctrl+Shift+Z)" onClick={redo}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M21 7v6h-6"/><path d="M21 13A9 9 0 1 1 18 6.7L21 13"/>
           </svg>
@@ -738,51 +798,61 @@ export default function DrawCanvas({
 
         <Divider />
 
-        {/* ── Export / Clear ── */}
-        <ToolBtn title={isExporting ? 'Exporting…' : 'Export PNG'} onClick={handleExport}>
+        {/* ── Export PNG ── */}
+        <ToolBtn
+          title="Export as PNG"
+          aria-label={isExporting ? 'Exporting…' : 'Export canvas as PNG'}
+          onClick={handleExport}
+        >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
         </ToolBtn>
-        <ToolBtn danger title="Clear canvas" onClick={() => {
-          if (window.confirm('Clear the canvas for everyone in this room?')) clearAll();
-        }}>
+
+        {/* ── Clear ── */}
+        <ToolBtn
+          danger
+          title="Clear canvas for everyone"
+          aria-label="Clear canvas for everyone"
+          onClick={() => { if (window.confirm('Clear the canvas for everyone in this room?')) clearAll(); }}
+        >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>
+            <path d="M3 6h18"/><path d="M8 6V4h8v2"/>
+            <path d="M19 6l-1 14H6L5 6"/>
           </svg>
         </ToolBtn>
 
-        {/* ── Status indicator ── */}
+        {/* ── Connection status ── */}
         <div
           role="status"
           className="ml-1 h-2 w-2 rounded-full"
           style={{ backgroundColor: statusColor }}
           title={`Connection: ${status}`}
-          aria-label={`Connection: ${status}`}
+          aria-label={`Connection status: ${status}`}
         />
       </div>
     </div>
   );
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ── Small sub-components ──────────────────────────────────────────────────────
 
 interface ToolBtnProps {
   active?: boolean;
   danger?: boolean;
   title: string;
+  'aria-label'?: string;
   onClick: () => void;
   children: React.ReactNode;
 }
 
-function ToolBtn({ active, danger, title, onClick, children }: ToolBtnProps) {
+function ToolBtn({ active, danger, title, 'aria-label': ariaLabel, onClick, children }: ToolBtnProps) {
   return (
     <button
       title={title}
-      aria-label={title}
-      aria-pressed={active}
+      aria-label={ariaLabel ?? title}
       onClick={onClick}
       className={[
         'flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
@@ -801,50 +871,4 @@ function ToolBtn({ active, danger, title, onClick, children }: ToolBtnProps) {
 
 function Divider() {
   return <span className="mx-0.5 h-6 w-px bg-gray-200" aria-hidden="true" />;
-}
-
-// ── Tool icons ────────────────────────────────────────────────────────────────
-
-function IconPen() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
-    </svg>
-  );
-}
-
-function IconEraser() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/>
-      <path d="M22 21H7"/><path d="m5 11 9 9"/>
-    </svg>
-  );
-}
-
-function IconFill() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M19 11V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v7"/>
-      <path d="M3 15h18"/>
-      <path d="M21 19a2 2 0 1 1-4 0c0-1.6 2-4 2-4s2 2.4 2 4Z"/>
-      <path d="m5 8 4 4"/>
-    </svg>
-  );
-}
-
-function IconRect() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="5" width="18" height="14" rx="1"/>
-    </svg>
-  );
-}
-
-function IconEllipse() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <ellipse cx="12" cy="12" rx="10" ry="7"/>
-    </svg>
-  );
 }

@@ -7,8 +7,16 @@
  *   Awareness                 — remote cursor positions + user metadata
  *                             — active in-progress op for real-time sync
  *
- * Op types: pen | eraser | fill | rect | ellipse
- * All ops include `createdAt` for deterministic replay ordering across clients.
+ * Design decisions:
+ *   - Ops are committed only on pointerup (not streamed mid-draw).
+ *     This keeps Yjs updates cheap and undo semantics clean.
+ *   - Fill ops store the *result* (pixel spans) not the seed point, so they
+ *     replay identically across all clients regardless of merge order.
+ *   - Active in-progress ops are streamed via awareness for real-time sync.
+ *   - Y.UndoManager tracks only 'local' origin transactions, so undo/redo
+ *     only affects the local user's ops.
+ *   - Awareness holds cursor + user info; no separate REST polling needed
+ *     for the canvas layer.
  */
 
 import { useEffect, useState, useRef, useCallback } from 'react';
@@ -22,39 +30,43 @@ export interface StrokePoint {
   y: number;
 }
 
+/** One horizontal run of filled pixels produced by the flood-fill algorithm. */
+export interface FillSpan {
+  y: number;
+  x1: number;
+  x2: number;
+}
+
+export type DrawOpTool = 'pen' | 'eraser' | 'fill' | 'rect' | 'ellipse';
+
 /**
- * A single draw operation. Discriminated by `tool`.
- *
- * pen/eraser : freehand path — use `points`
- * fill       : flood fill   — use `fillX`, `fillY`
- * rect       : rectangle    — use `shapeX`, `shapeY`, `shapeW`, `shapeH`, `shapeFilled`
- * ellipse    : ellipse      — use `shapeX`, `shapeY`, `shapeW`, `shapeH`, `shapeFilled`
+ * A single drawing operation committed to the Yjs document.
+ * The tool field discriminates which optional fields are populated:
+ *   pen/eraser   => points[]
+ *   fill         => spans[]
+ *   rect/ellipse => x1, y1, x2, y2, filled
  */
-export interface Stroke {
+export interface DrawOp {
   id: string;
-  tool: 'pen' | 'eraser' | 'fill' | 'rect' | 'ellipse';
+  tool: DrawOpTool;
   color: string;
   lineWidth: number;
   userId: string;
   complete: boolean;
-  /** ms timestamp — used to sort ops for deterministic replay ordering */
-  createdAt: number;
-
   // pen / eraser
-  points: StrokePoint[];
-
+  points?: StrokePoint[];
   // fill
-  fillX?: number;
-  fillY?: number;
-
+  spans?: FillSpan[];
   // rect / ellipse
-  shapeX?: number;
-  shapeY?: number;
-  shapeW?: number;
-  shapeH?: number;
-  /** true = filled interior; false = outline only */
-  shapeFilled?: boolean;
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
+  filled?: boolean;
 }
+
+/** Backward-compat alias. */
+export type Stroke = DrawOp;
 
 export interface RemoteCursor {
   clientId: number;
@@ -71,8 +83,10 @@ interface AwarenessUser {
   userName: string;
   userColor: string;
   cursor: { x: number; y: number } | null;
+  /** Participant DB id — used by the YWS server to drive server-side presence heartbeats */
   participantId?: string;
-  activeStroke?: Stroke | null;
+  /** Active in-progress op for real-time drawing sync */
+  activeStroke?: DrawOp | null;
 }
 
 export interface YjsCanvasOptions {
@@ -81,19 +95,24 @@ export interface YjsCanvasOptions {
   userId: string;
   userName: string;
   userColor: string;
+  /** When provided, included in awareness so the YWS server can keep DB presence fresh */
   participantId?: string;
+  /**
+   * Called whenever any peer's awareness state changes (join/leave/cursor move).
+   * Use this to drive event-driven participant list refreshes rather than polling.
+   */
   onAwarenessChange?: () => void;
 }
 
 export interface YjsCanvasState {
-  strokes: Stroke[];
-  addStroke: (stroke: Stroke) => void;
+  strokes: DrawOp[];
+  addStroke: (op: DrawOp) => void;
   deleteStroke: (id: string) => void;
   clearAll: () => void;
   setMyCursor: (cursor: { x: number; y: number } | null) => void;
-  setMyActiveStroke: (stroke: Stroke | null) => void;
+  setMyActiveStroke: (op: DrawOp | null) => void;
   remoteCursors: RemoteCursor[];
-  remoteActiveStrokes: Stroke[];
+  remoteActiveStrokes: DrawOp[];
   status: ConnectionStatus;
   undo: () => void;
   redo: () => void;
@@ -112,16 +131,21 @@ export function useYjsCanvas({
   participantId,
   onAwarenessChange,
 }: YjsCanvasOptions): YjsCanvasState {
-  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [strokes, setStrokes] = useState<DrawOp[]>([]);
   const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([]);
-  const [remoteActiveStrokes, setRemoteActiveStrokes] = useState<Stroke[]>([]);
+  const [remoteActiveStrokes, setRemoteActiveStrokes] = useState<DrawOp[]>([]);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
 
-  const yStrokesRef = useRef<Y.Map<Stroke> | null>(null);
+  // Stable refs to mutable Yjs objects — safe to call from callbacks without
+  // stale-closure issues.
+  const yStrokesRef = useRef<Y.Map<DrawOp> | null>(null);
   const docRef = useRef<Y.Doc | null>(null);
   const awarenessRef = useRef<WebsocketProvider['awareness'] | null>(null);
   const undoManagerRef = useRef<Y.UndoManager | null>(null);
+  // Keep a snapshot of awareness user fields to avoid re-setting them on every
+  // cursor move (they only change when the component re-mounts with new props).
   const myUserRef = useRef<AwarenessUser>({ userId, userName, userColor, cursor: null, participantId });
+  // Stable ref for the awareness-change callback — avoids re-running the effect.
   const onAwarenessChangeRef = useRef(onAwarenessChange);
 
   useEffect(() => {
@@ -136,7 +160,7 @@ export function useYjsCanvas({
     const doc = new Y.Doc();
     docRef.current = doc;
 
-    const yStrokes = doc.getMap<Stroke>('strokes');
+    const yStrokes = doc.getMap<DrawOp>('strokes');
     yStrokesRef.current = yStrokes;
 
     const undoManager = new Y.UndoManager(yStrokes, {
@@ -151,31 +175,44 @@ export function useYjsCanvas({
     });
     awarenessRef.current = provider.awareness;
 
+    // ── Connection status ──────────────────────────────────────────────────
+
     const handleStatus = ({ status: s }: { status: string }) => {
+      console.debug(`[yjs] status => ${s} (room=${roomSlug})`);
       if (s === 'connected') setStatus('online');
       else if (s === 'connecting') setStatus('connecting');
       else setStatus('offline');
     };
     provider.on('status', handleStatus);
 
+    // ── Initial load ───────────────────────────────────────────────────────
+
     const handleSync = (synced: boolean) => {
       if (!synced) return;
-      setStrokes(Array.from(yStrokes.values()));
+      const loaded = Array.from(yStrokes.values());
+      console.debug(`[yjs] initial sync complete — ${loaded.length} op(s) loaded (room=${roomSlug})`);
+      setStrokes(loaded);
       setStatus('online');
     };
     provider.on('sync', handleSync);
 
+    // ── Remote changes => state ─────────────────────────────────────────────
+
     const handleObserve = () => {
-      setStrokes(Array.from(yStrokes.values()));
+      const all = Array.from(yStrokes.values());
+      console.debug(`[yjs] Y.Map observe fired — ${all.length} op(s) total`);
+      setStrokes(all);
     };
     yStrokes.observe(handleObserve);
+
+    // ── Awareness setup ────────────────────────────────────────────────────
 
     provider.awareness.setLocalStateField('user', myUserRef.current);
 
     const syncAwareness = () => {
       const states = provider.awareness.getStates() as Map<number, { user?: AwarenessUser }>;
       const cursors: RemoteCursor[] = [];
-      const activeStrokes: Stroke[] = [];
+      const activeStrokes: DrawOp[] = [];
       states.forEach((state, clientId) => {
         if (clientId === provider.awareness.clientID) return;
         const u = state.user;
@@ -187,10 +224,14 @@ export function useYjsCanvas({
           userColor: u.userColor ?? '#888888',
           cursor: u.cursor ?? null,
         });
-        if (u.activeStroke) activeStrokes.push(u.activeStroke);
+        if (u.activeStroke) {
+          activeStrokes.push(u.activeStroke);
+        }
       });
       setRemoteCursors(cursors);
       setRemoteActiveStrokes(activeStrokes);
+      // Notify caller so they can refresh the REST participant list immediately
+      // rather than waiting for the next polling tick.
       onAwarenessChangeRef.current?.();
     };
     provider.awareness.on('change', syncAwareness);
@@ -208,13 +249,16 @@ export function useYjsCanvas({
       awarenessRef.current = null;
       undoManagerRef.current = null;
     };
-  }, [roomSlug, wsUrl]);
+  }, [roomSlug, wsUrl]); // userId/userName/userColor handled via refs
 
-  const addStroke = useCallback((stroke: Stroke) => {
+  // ── Stable action callbacks ────────────────────────────────────────────────
+
+  const addStroke = useCallback((op: DrawOp) => {
     const ys = yStrokesRef.current;
     const doc = docRef.current;
     if (!ys || !doc) return;
-    doc.transact(() => ys.set(stroke.id, stroke), LOCAL_ORIGIN);
+    console.debug(`[yjs] addOp ${op.id} tool=${op.tool} — map will have ${ys.size + 1} op(s)`);
+    doc.transact(() => ys.set(op.id, op), LOCAL_ORIGIN);
   }, []);
 
   const deleteStroke = useCallback((id: string) => {
@@ -240,15 +284,20 @@ export function useYjsCanvas({
     awareness.setLocalStateField('user', myUserRef.current);
   }, []);
 
-  const setMyActiveStroke = useCallback((stroke: Stroke | null) => {
+  const setMyActiveStroke = useCallback((op: DrawOp | null) => {
     const awareness = awarenessRef.current;
     if (!awareness) return;
-    myUserRef.current.activeStroke = stroke;
+    myUserRef.current.activeStroke = op;
     awareness.setLocalStateField('user', myUserRef.current);
   }, []);
 
-  const undo = useCallback(() => { undoManagerRef.current?.undo(); }, []);
-  const redo = useCallback(() => { undoManagerRef.current?.redo(); }, []);
+  const undo = useCallback(() => {
+    undoManagerRef.current?.undo();
+  }, []);
+
+  const redo = useCallback(() => {
+    undoManagerRef.current?.redo();
+  }, []);
 
   return {
     strokes, addStroke, deleteStroke, clearAll,
