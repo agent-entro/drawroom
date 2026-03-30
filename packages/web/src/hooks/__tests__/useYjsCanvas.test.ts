@@ -313,3 +313,56 @@ describe('Stroke data shape', () => {
     expect(retrieved.complete).toBe(true);
   });
 });
+
+// ── Phase 3: Chat Y.Array in same doc ─────────────────────────────────────────
+
+describe('Chat Y.Array coexists with stroke Y.Map in the same doc', () => {
+  it('chat entries can be appended and read back', () => {
+    const doc = new Y.Doc();
+    interface ChatEntry { id: string; content: string; type: string }
+    const chatArray = doc.getArray<ChatEntry>('chat');
+
+    chatArray.push([{ id: 'msg-1', content: 'Hello', type: 'message' }]);
+    chatArray.push([{ id: 'msg-2', content: 'World', type: 'message' }]);
+
+    expect(chatArray.length).toBe(2);
+    expect(chatArray.get(0).content).toBe('Hello');
+    expect(chatArray.get(1).content).toBe('World');
+  });
+
+  it('chat array and stroke map do not interfere', () => {
+    const doc = new Y.Doc();
+    interface ChatEntry { id: string; content: string }
+    const chatArray = doc.getArray<ChatEntry>('chat');
+    const yStrokes = doc.getMap<Stroke>('strokes');
+
+    yStrokes.set('s1', makeStroke('s1'));
+    chatArray.push([{ id: 'msg-1', content: 'Hi' }]);
+
+    expect(yStrokes.size).toBe(1);
+    expect(chatArray.length).toBe(1);
+  });
+
+  it('chat updates sync between two docs', () => {
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+
+    interface ChatEntry { id: string; content: string }
+    const chatA = docA.getArray<ChatEntry>('chat');
+    const chatB = docB.getArray<ChatEntry>('chat');
+
+    // Wire docs together (simulate y-websocket sync)
+    docA.on('update', (update: Uint8Array) => Y.applyUpdate(docB, update));
+    docB.on('update', (update: Uint8Array) => Y.applyUpdate(docA, update));
+
+    chatA.push([{ id: 'msg-1', content: 'from A' }]);
+    chatB.push([{ id: 'msg-2', content: 'from B' }]);
+
+    // Both docs should see both messages
+    expect(chatA.length).toBe(2);
+    expect(chatB.length).toBe(2);
+
+    docA.destroy();
+    docB.destroy();
+  });
+});
