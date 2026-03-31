@@ -444,6 +444,18 @@ export default function DrawCanvas({
     renderAll();
   }, [remoteActiveStrokes, renderAll]);
 
+  // ── Non-passive touchstart on canvas ──────────────────────────────────────
+  // React event handlers are passive by default; we need a native listener
+  // with { passive: false } so e.preventDefault() actually suppresses iOS
+  // scroll/magnifier/callout on the drawing surface.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handler = (e: TouchEvent) => e.preventDefault();
+    canvas.addEventListener('touchstart', handler, { passive: false });
+    return () => canvas.removeEventListener('touchstart', handler);
+  }, []);
+
   // ── Pointer helpers ────────────────────────────────────────────────────────
 
   const getCanvasPos = (e: React.PointerEvent<HTMLCanvasElement>): StrokePoint => {
