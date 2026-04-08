@@ -55,7 +55,7 @@ export default function RoomPage() {
   });
 
   return (
-    <div className="h-screen flex flex-col bg-white">
+    <div className="h-[100dvh] flex flex-col bg-white">
       {/* Display name modal — shown until user has joined */}
       {needsDisplayName && !isLoading && (
         <DisplayNameModal onJoin={joinWithName} error={error} isLoading={isLoading} />
@@ -104,7 +104,7 @@ export default function RoomPage() {
       {/* Main area */}
       <div className="flex flex-1 overflow-hidden relative">
         {/* Canvas */}
-        <section className="flex-1 relative" aria-label="Drawing canvas">
+        <section className="flex-1 min-h-0 relative" aria-label="Drawing canvas">
           <Suspense
             fallback={
               <div className="absolute inset-0 flex items-center justify-center bg-gray-50">
@@ -168,7 +168,7 @@ export default function RoomPage() {
         {/* Floating chat toggle — mobile only, shown when chat is closed */}
         {!mobileChatOpen && (
           <button
-            className="md:hidden absolute bottom-5 right-4 z-20 h-12 w-12 flex items-center justify-center rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 active:scale-95 transition-all"
+            className="md:hidden absolute bottom-[max(1.25rem,env(safe-area-inset-bottom,0px))] right-4 z-20 h-12 w-12 flex items-center justify-center rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 active:scale-95 transition-all"
             onClick={() => setMobileChatOpen(true)}
             aria-label="Open chat"
             title="Open chat"
