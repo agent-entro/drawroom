@@ -75,6 +75,7 @@ function MessageItem({ msg, isOwn }: MessageItemProps) {
         className={[
           'max-w-[75%] w-fit text-sm break-words leading-[1.4]',
           'rounded-[18px]',
+          'allow-select',
           isOwn
             ? 'rounded-br-[4px] text-white'
             : 'rounded-bl-[4px]',
@@ -109,6 +110,11 @@ export interface ChatPanelProps {
   participantId?: string;
   /** Whether the panel starts collapsed */
   defaultCollapsed?: boolean;
+  /**
+   * If provided, the close button calls this instead of entering the
+   * collapsed icon sidebar. Used by RoomPage to close the mobile overlay.
+   */
+  onClose?: () => void;
 }
 
 export default function ChatPanel({
@@ -119,6 +125,7 @@ export default function ChatPanel({
   isConnected,
   participantId,
   defaultCollapsed = false,
+  onClose,
 }: ChatPanelProps) {
   const [text, setText] = useState('');
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
@@ -182,7 +189,7 @@ export default function ChatPanel({
           onClick={() => setCollapsed(false)}
           title="Open chat"
           aria-label="Open chat panel"
-          className="text-gray-500 hover:text-gray-800 transition-colors"
+          className="h-9 w-9 flex items-center justify-center rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100 active:bg-gray-200 transition-colors"
         >
           <svg
             width="18"
@@ -227,10 +234,10 @@ export default function ChatPanel({
           />
         </div>
         <button
-          onClick={() => setCollapsed(true)}
+          onClick={() => { setCollapsed(true); onClose?.(); }}
           title="Collapse chat"
           aria-label="Collapse chat panel"
-          className="text-gray-400 hover:text-gray-600 transition-colors"
+          className="h-7 w-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 active:bg-gray-200 transition-colors"
         >
           <svg
             width="14"
@@ -250,7 +257,7 @@ export default function ChatPanel({
       {/* Message list */}
       <div
         ref={listRef}
-        className="flex-1 overflow-y-auto flex flex-col"
+        className="flex-1 overflow-y-auto flex flex-col chat-messages-list"
         style={{ padding: 16, gap: 8 }}
         role="log"
         aria-label="Chat messages"
@@ -294,6 +301,8 @@ export default function ChatPanel({
                 minHeight: 38,
                 padding: '10px 15px',
                 border: '1px solid #ddd',
+                userSelect: 'text',
+                WebkitUserSelect: 'text',
               }}
             />
           </div>

@@ -39,3 +39,25 @@ button { touch-action: manipulation; }
 
 /* Canvas — suppress all default touch behaviors */
 canvas, [role="canvas"] { touch-action: none; }
+
+/* Toolbar — horizontal scroll on small screens */
+[role="toolbar"] {
+  touch-action: pan-x;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+[role="toolbar"]::-webkit-scrollbar { display: none; }
+
+/* Chat message list — vertical scroll on touch */
+.chat-messages-list {
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Allow text selection inside chat bubbles and inputs */
+.allow-select,
+.allow-select * {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}

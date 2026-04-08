@@ -4,7 +4,7 @@
  * Chat state (useYjsChat) lives here so comment pins can flow
  * from ChatPanel → DrawCanvas without prop-drilling through lazy boundaries.
  */
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useRoom } from '../hooks/useRoom.ts';
 import { useYjsChat } from '../hooks/useYjsChat.ts';
@@ -29,6 +29,9 @@ const WS_URL = (import.meta.env['VITE_YWS_URL'] as string | undefined) ?? _defau
 export default function RoomPage() {
   const { slug } = useParams<{ slug: string }>();
   const roomSlug = slug ?? 'default';
+
+  // Mobile chat panel toggle — hidden by default on small screens
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
 
   const {
     participant, participants, needsDisplayName, isLoading, error,
@@ -74,21 +77,23 @@ export default function RoomPage() {
 
       {/* Top bar */}
       <header className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-white shadow-sm z-10 relative">
-        <span className="font-bold text-gray-900 text-lg">
+        <span className="font-bold text-gray-900 text-lg shrink-0">
           Draw<span className="text-blue-600">Room</span>
         </span>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 min-w-0 mx-2">
           <ParticipantList
             participants={participants}
             currentParticipantId={participant?.id}
           />
-          <span className="text-sm text-gray-500 font-mono">{roomSlug}</span>
+          <span className="text-sm text-gray-500 font-mono truncate max-w-[100px] sm:max-w-none hidden xs:block sm:block">
+            {roomSlug}
+          </span>
         </div>
 
         <button
           onClick={() => void navigator.clipboard.writeText(window.location.href)}
-          className="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors"
+          className="shrink-0 text-sm px-3 py-2 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 rounded-lg text-gray-700 font-medium transition-colors min-h-[36px]"
           title="Copy room link to clipboard"
           aria-label="Copy room link to clipboard"
         >
@@ -97,7 +102,7 @@ export default function RoomPage() {
       </header>
 
       {/* Main area */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
         {/* Canvas */}
         <section className="flex-1 relative" aria-label="Drawing canvas">
           <Suspense
@@ -129,15 +134,71 @@ export default function RoomPage() {
           </Suspense>
         </section>
 
-        {/* Chat panel */}
-        <ChatPanel
-          messages={messages}
-          typingNames={typingNames}
-          sendMessage={sendMessage}
-          setTyping={setTyping}
-          isConnected={chatConnected}
-          participantId={participant?.id}
-        />
+        {/* Mobile backdrop — tap to close chat */}
+        {mobileChatOpen && (
+          <div
+            className="md:hidden absolute inset-0 z-10 bg-black/20"
+            onClick={() => setMobileChatOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
+        {/* Chat panel
+            Desktop (md+): always visible as a sidebar
+            Mobile: hidden by default; slides in as an absolute overlay when open */}
+        <div
+          className={[
+            'md:flex',
+            mobileChatOpen
+              ? 'flex absolute inset-y-0 right-0 z-20 md:relative md:z-auto md:shadow-none shadow-2xl'
+              : 'hidden',
+          ].join(' ')}
+        >
+          <ChatPanel
+            messages={messages}
+            typingNames={typingNames}
+            sendMessage={sendMessage}
+            setTyping={setTyping}
+            isConnected={chatConnected}
+            participantId={participant?.id}
+            onClose={() => setMobileChatOpen(false)}
+          />
+        </div>
+
+        {/* Floating chat toggle — mobile only, shown when chat is closed */}
+        {!mobileChatOpen && (
+          <button
+            className="md:hidden absolute bottom-5 right-4 z-20 h-12 w-12 flex items-center justify-center rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 active:scale-95 transition-all"
+            onClick={() => setMobileChatOpen(true)}
+            aria-label="Open chat"
+            title="Open chat"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            {/* Unread badge */}
+            {messages.filter((m) => m.type !== 'system').length > 0 && (
+              <span
+                className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center rounded-full bg-red-500 text-[10px] font-bold leading-none"
+                aria-label={`${messages.filter((m) => m.type !== 'system').length} messages`}
+              >
+                {messages.filter((m) => m.type !== 'system').length > 9
+                  ? '9+'
+                  : messages.filter((m) => m.type !== 'system').length}
+              </span>
+            )}
+          </button>
+        )}
       </div>
     </div>
   );

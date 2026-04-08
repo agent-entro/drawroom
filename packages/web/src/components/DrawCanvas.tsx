@@ -803,7 +803,7 @@ export default function DrawCanvas({
       <div
         role="toolbar"
         aria-label="Drawing tools"
-        className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-2 shadow-lg"
+        className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-2 shadow-lg overflow-x-auto max-w-[calc(100vw-1rem)]"
       >
         {/* ── Tool selection ── */}
         <div role="group" aria-label="Tool selection" className="flex items-center gap-0.5">
