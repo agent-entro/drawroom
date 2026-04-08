@@ -105,6 +105,7 @@ export function useYjsChat({
       persistedIdsRef.current.add(msg.id);
       try {
         await postMessage(roomSlug, {
+          id: msg.id,
           participantId: msg.participantId,
           content: msg.content,
           type: msg.type === 'comment' ? 'comment' : 'message',
@@ -226,7 +227,7 @@ export function useYjsChat({
       if (!trimmed) return;
 
       const msg: StoredChatMsg = {
-        id: `${p.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        id: crypto.randomUUID(),
         content: trimmed,
         type: opts?.type ?? 'message',
         participantId: p.id,

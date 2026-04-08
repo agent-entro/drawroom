@@ -75,6 +75,8 @@ export function getMessages(
 }
 
 export interface PostMessageRequest {
+  /** Client-generated UUID — used as the DB primary key for dedup on history load. */
+  id?: string;
   participantId: string;
   content: string;
   type?: 'message' | 'comment';

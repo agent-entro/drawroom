@@ -90,6 +90,7 @@ messages.post('/', async (c) => {
 
   try {
     const body = await c.req.json<{
+      id?: string;
       participantId: string;
       content: string;
       type?: string;
@@ -101,6 +102,10 @@ messages.post('/', async (c) => {
       return c.json({ error: 'participantId and content are required' }, 400);
     }
 
+    // Validate client-provided id is a UUID; ignore if malformed.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const clientId = body.id && UUID_RE.test(body.id) ? body.id : null;
+
     const [room] = await sql`
       SELECT id FROM rooms WHERE slug = ${slug} AND status != 'deleted'
     `;
@@ -109,26 +114,59 @@ messages.post('/', async (c) => {
     const roomId = room['id'] as string;
     const type = body.type ?? 'message';
 
-    const [msg] = await sql<ChatMessage[]>`
-      INSERT INTO chat_messages (room_id, participant_id, content, type, canvas_x, canvas_y)
-      VALUES (
-        ${roomId},
-        ${body.participantId},
-        ${body.content.trim()},
-        ${type},
-        ${body.canvasX ?? null},
-        ${body.canvasY ?? null}
-      )
-      RETURNING
-        id,
-        room_id        AS "roomId",
-        participant_id AS "participantId",
-        content,
-        type,
-        canvas_x       AS "canvasX",
-        canvas_y       AS "canvasY",
-        created_at     AS "createdAt"
-    `;
+    // If the client supplied a UUID, use it as the PK so that Yjs Y.Map keys and
+    // DB ids stay in sync — this prevents history re-load from inserting a second
+    // Y.Map entry (different id) for the same message and causing duplicates.
+    // ON CONFLICT DO NOTHING makes the insert idempotent on reconnect/retry.
+    const [msg] = clientId
+      ? await sql<ChatMessage[]>`
+          INSERT INTO chat_messages (id, room_id, participant_id, content, type, canvas_x, canvas_y)
+          VALUES (
+            ${clientId}::uuid,
+            ${roomId},
+            ${body.participantId},
+            ${body.content.trim()},
+            ${type},
+            ${body.canvasX ?? null},
+            ${body.canvasY ?? null}
+          )
+          ON CONFLICT (id) DO NOTHING
+          RETURNING
+            id,
+            room_id        AS "roomId",
+            participant_id AS "participantId",
+            content,
+            type,
+            canvas_x       AS "canvasX",
+            canvas_y       AS "canvasY",
+            created_at     AS "createdAt"
+        `
+      : await sql<ChatMessage[]>`
+          INSERT INTO chat_messages (room_id, participant_id, content, type, canvas_x, canvas_y)
+          VALUES (
+            ${roomId},
+            ${body.participantId},
+            ${body.content.trim()},
+            ${type},
+            ${body.canvasX ?? null},
+            ${body.canvasY ?? null}
+          )
+          RETURNING
+            id,
+            room_id        AS "roomId",
+            participant_id AS "participantId",
+            content,
+            type,
+            canvas_x       AS "canvasX",
+            canvas_y       AS "canvasY",
+            created_at     AS "createdAt"
+        `;
+
+    // ON CONFLICT DO NOTHING returns an empty set when the row already exists.
+    // Treat it as a successful no-op (idempotent retry by client on reconnect).
+    if (!msg) {
+      return c.json({ id: clientId }, 200);
+    }
 
     // Update room activity
     await sql`
