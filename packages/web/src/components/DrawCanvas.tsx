@@ -297,6 +297,14 @@ function isInsideSel(sel: SelectionState, pos: { x: number; y: number }): boolea
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface CommentReply {
+  id: string;
+  content: string;
+  displayName: string;
+  color: string;
+  createdAt: string;
+}
+
 export interface CommentPin {
   id: string;
   content: string;
@@ -304,6 +312,8 @@ export interface CommentPin {
   color: string;
   x: number;
   y: number;
+  /** Threaded replies under this pin, chronological order. */
+  replies: CommentReply[];
 }
 
 /** Selection tools — local-only, produce no DrawOp until copy/paste is triggered. */
@@ -351,8 +361,10 @@ interface DrawCanvasProps {
   onParticipantsRefresh?: () => void;
   /** Comment pins to render on the SVG overlay */
   commentPins?: CommentPin[];
-  /** Called when the user submits a canvas-anchored comment */
+  /** Called when the user submits a new canvas-anchored comment */
   onCommentCreate?: (content: string, x: number, y: number) => void;
+  /** Called when the user replies to an existing comment pin */
+  onCommentReply?: (parentId: string, content: string) => void;
   /**
    * Called once when the Yjs doc + provider are ready.
    * Use this to share the same CRDT doc with sibling hooks (e.g. useChat).
@@ -370,6 +382,7 @@ export default function DrawCanvas({
   onParticipantsRefresh,
   commentPins = [],
   onCommentCreate,
+  onCommentReply,
   onYjsReady,
 }: DrawCanvasProps) {
   const userId = getUserId();
@@ -425,6 +438,11 @@ export default function DrawCanvas({
   const clipboardRef = useRef<ClipboardEntry | null>(null);
   // Image cache for stamp ops — avoids re-creating Image objects each render
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  // Long-press detection for mobile copy: 500ms hold inside a completed selection triggers copy
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  // Stable ref to copySelection — updated after copySelection is defined, avoids forward-reference
+  const copySelectionRef = useRef<() => void>(() => {});
 
   // ── UI state ───────────────────────────────────────────────────────────────
 
@@ -443,11 +461,18 @@ export default function DrawCanvas({
   // Whether the pointer is currently hovering inside a completed selection — drives 'move' cursor
   const [isMouseOverSel, setIsMouseOverSel] = useState(false);
   const isMouseOverSelRef = useRef(false);
+  // Toast message for copy feedback (shown briefly after long-press copy)
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Comment popover state
+  // Comment popover state (new comment creation)
   const [commentPopover, setCommentPopover] = useState<{ x: number; y: number } | null>(null);
   const [commentText, setCommentText] = useState('');
   const commentInputRef = useRef<HTMLInputElement>(null);
+
+  // Open pin popup state (reading/replying to existing pins)
+  const [openPinId, setOpenPinId] = useState<string | null>(null);
+  const [pinReplyText, setPinReplyText] = useState('');
 
   // Keep refs in sync with state (avoids pointer handler re-creation)
   useEffect(() => { toolRef.current = tool; }, [tool]);
@@ -634,6 +659,10 @@ export default function DrawCanvas({
       e.currentTarget.setPointerCapture(e.pointerId);
       const pos = getCanvasPos(e);
 
+      // Close any open pin popup when clicking on the canvas
+      setOpenPinId(null);
+      setPinReplyText('');
+
       // Comment tool: show popover instead of drawing
       if (activeTool === 'comment') {
         setCommentPopover({ x: pos.x, y: pos.y });
@@ -654,6 +683,25 @@ export default function DrawCanvas({
             sx2: existingSel.x2, sy2: existingSel.y2,
           };
           isDrawingRef.current = true;
+
+          // Long-press to copy on touch: start 500ms timer. Cancelled if the finger moves > 10px.
+          if (e.pointerType === 'touch') {
+            longPressStartPosRef.current = pos;
+            if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = setTimeout(() => {
+              longPressTimerRef.current = null;
+              longPressStartPosRef.current = null;
+              // Cancel the drag that started concurrently (finger didn't actually move)
+              isDraggingSelRef.current = false;
+              dragAnchorRef.current = null;
+              isDrawingRef.current = false;
+              copySelectionRef.current();
+              if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+              setToastMessage('Copied to clipboard!');
+              toastTimerRef.current = setTimeout(() => setToastMessage(null), 2000);
+            }, 500);
+          }
+
           return;
         }
         // New selection — implicitly clears previous one
@@ -730,6 +778,17 @@ export default function DrawCanvas({
 
       const curTool = activeToolRef.current;
       if (curTool === 'rect-select' || curTool === 'circle-select') {
+        // Cancel long press if touch moved more than 10px from start position
+        if (longPressTimerRef.current && longPressStartPosRef.current) {
+          const dx = pos.x - longPressStartPosRef.current.x;
+          const dy = pos.y - longPressStartPosRef.current.y;
+          if (Math.hypot(dx, dy) > 10) {
+            clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+            longPressStartPosRef.current = null;
+          }
+        }
+
         if (isDraggingSelRef.current && selectionRef.current && dragAnchorRef.current) {
           // Drag the whole selection rectangle
           const anchor = dragAnchorRef.current;
@@ -782,6 +841,13 @@ export default function DrawCanvas({
   );
 
   const handlePointerUp = useCallback(() => {
+    // Cancel any pending long press (finger lifted before 500ms)
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+      longPressStartPosRef.current = null;
+    }
+
     isDrawingRef.current = false;
 
     // Finish selection drag or new selection
@@ -869,6 +935,10 @@ export default function DrawCanvas({
     renderAll();
   }, [renderAll]);
 
+  // Keep the stable ref in sync so the long-press timer in handlePointerDown can call it
+  // without needing copySelection in that callback's dependency array (forward reference)
+  useEffect(() => { copySelectionRef.current = copySelection; }, [copySelection]);
+
   const pasteSelection = useCallback(() => {
     const cb = clipboardRef.current;
     if (!cb) return;
@@ -925,6 +995,8 @@ export default function DrawCanvas({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Don't steal keys while the user is typing in any input or textarea
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       else if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
@@ -1057,13 +1129,23 @@ export default function DrawCanvas({
         onPointerLeave={handlePointerLeave}
       />
 
-      {/* Remote cursors + comment pins — SVG overlay */}
+      {/* Long-press copy toast — shown briefly after a mobile long-press copy */}
+      {toastMessage && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none absolute bottom-8 left-1/2 z-50 -translate-x-1/2 rounded-full bg-gray-900/80 px-4 py-2 text-sm font-medium text-white shadow-lg"
+        >
+          {toastMessage}
+        </div>
+      )}
+
+      {/* Remote cursors — SVG overlay (pointer-events-none, cursors only) */}
       <svg
-        aria-hidden={commentPins.length === 0}
+        aria-hidden="true"
         className="pointer-events-none absolute inset-0"
         style={{ width: '100%', height: '100%' }}
       >
-        {/* Remote cursors */}
         {remoteCursors
           .filter((c) => c.cursor !== null)
           .map((c) => {
@@ -1094,19 +1176,194 @@ export default function DrawCanvas({
               </g>
             );
           })}
-
-        {/* Comment pins */}
-        {commentPins.map((pin) => (
-          <g key={pin.id} transform={`translate(${pin.x},${pin.y})`} aria-label={`Comment by ${pin.displayName}: ${pin.content}`}>
-            {/* Pin circle */}
-            <circle r="10" fill={pin.color} stroke="white" strokeWidth="2" />
-            {/* Chat icon */}
-            <text x="0" y="5" textAnchor="middle" fontSize="11" fill="white" aria-hidden="true">💬</text>
-            {/* Tooltip on hover — shown as title */}
-            <title>{`${pin.displayName}: ${pin.content}`}</title>
-          </g>
-        ))}
       </svg>
+
+      {/* Spatial comment pins — DOM overlay so they can receive pointer events */}
+      {commentPins.map((pin) => {
+        const isOpen = openPinId === pin.id;
+        return (
+          <div
+            key={pin.id}
+            style={{
+              position: 'absolute',
+              left: pin.x - 11,
+              top: pin.y - 11,
+              zIndex: 18,
+              pointerEvents: 'all',
+            }}
+          >
+            {/* Pin button */}
+            <button
+              type="button"
+              aria-label={`Comment by ${pin.displayName}: ${pin.content}`}
+              title={`${pin.displayName}: ${pin.content}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isOpen) {
+                  setOpenPinId(null);
+                  setPinReplyText('');
+                } else {
+                  setOpenPinId(pin.id);
+                  setPinReplyText('');
+                  setCommentPopover(null);
+                }
+              }}
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                backgroundColor: pin.color,
+                border: '2px solid white',
+                boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 11,
+                lineHeight: 1,
+                padding: 0,
+              }}
+            >
+              💬
+            </button>
+
+            {/* Pin popup — threaded view */}
+            {isOpen && (
+              <div
+                role="dialog"
+                aria-label={`Comment by ${pin.displayName}`}
+                style={{
+                  position: 'absolute',
+                  top: 28,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: 240,
+                  backgroundColor: 'white',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 12,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                  padding: '10px 12px',
+                  zIndex: 30,
+                  pointerEvents: 'all',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Root comment */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <span style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    backgroundColor: pin.color, flexShrink: 0,
+                  }} />
+                  <span style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>
+                    {pin.displayName}
+                  </span>
+                </div>
+                <p style={{
+                  fontSize: 13, color: '#1f2937', margin: '0 0 8px',
+                  lineHeight: 1.4, wordBreak: 'break-word',
+                }}>
+                  {pin.content}
+                </p>
+
+                {/* Reply thread */}
+                {pin.replies.length > 0 && (
+                  <div style={{
+                    borderTop: '1px solid #f3f4f6',
+                    paddingTop: 8,
+                    marginBottom: 8,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                    maxHeight: 160,
+                    overflowY: 'auto',
+                  }}>
+                    {pin.replies.map((reply) => (
+                      <div key={reply.id}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                          <span style={{
+                            width: 6, height: 6, borderRadius: '50%',
+                            backgroundColor: reply.color, flexShrink: 0,
+                          }} />
+                          <span style={{ fontSize: 10, fontWeight: 600, color: '#6b7280' }}>
+                            {reply.displayName}
+                          </span>
+                        </div>
+                        <p style={{
+                          fontSize: 12, color: '#374151', margin: 0,
+                          lineHeight: 1.4, wordBreak: 'break-word',
+                          paddingLeft: 11, // align under name
+                        }}>
+                          {reply.content}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Reply input */}
+                {onCommentReply && (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="text"
+                      value={pinReplyText}
+                      onChange={(e) => setPinReplyText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && pinReplyText.trim()) {
+                          onCommentReply(pin.id, pinReplyText.trim());
+                          setPinReplyText('');
+                        } else if (e.key === 'Escape') {
+                          setOpenPinId(null);
+                          setPinReplyText('');
+                        }
+                      }}
+                      placeholder="Reply… (Enter)"
+                      maxLength={500}
+                      style={{
+                        flex: 1, fontSize: 12, padding: '6px 10px',
+                        border: '1px solid #d1d5db', borderRadius: 8,
+                        outline: 'none', fontFamily: 'inherit',
+                      }}
+                      aria-label="Reply to comment"
+                    />
+                    <button
+                      type="button"
+                      disabled={!pinReplyText.trim()}
+                      onClick={() => {
+                        if (pinReplyText.trim()) {
+                          onCommentReply(pin.id, pinReplyText.trim());
+                          setPinReplyText('');
+                        }
+                      }}
+                      style={{
+                        padding: '6px 10px', fontSize: 11, fontWeight: 600,
+                        backgroundColor: pinReplyText.trim() ? '#3b82f6' : '#e5e7eb',
+                        color: pinReplyText.trim() ? 'white' : '#9ca3af',
+                        border: 'none', borderRadius: 8, cursor: pinReplyText.trim() ? 'pointer' : 'default',
+                      }}
+                    >
+                      Reply
+                    </button>
+                  </div>
+                )}
+
+                {/* Close button */}
+                <button
+                  type="button"
+                  onClick={() => { setOpenPinId(null); setPinReplyText(''); }}
+                  aria-label="Close comment"
+                  style={{
+                    position: 'absolute', top: 6, right: 8,
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    fontSize: 14, color: '#9ca3af', lineHeight: 1, padding: 2,
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       {/* Comment popover — shown when comment tool is active and user clicked */}
       {commentPopover && (
