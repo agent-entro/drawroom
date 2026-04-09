@@ -37,7 +37,7 @@ export interface FillSpan {
   x2: number;
 }
 
-export type DrawOpTool = 'pen' | 'eraser' | 'fill' | 'rect' | 'ellipse';
+export type DrawOpTool = 'pen' | 'eraser' | 'fill' | 'rect' | 'ellipse' | 'stamp';
 
 /**
  * A single drawing operation committed to the Yjs document.
@@ -45,6 +45,7 @@ export type DrawOpTool = 'pen' | 'eraser' | 'fill' | 'rect' | 'ellipse';
  *   pen/eraser   => points[]
  *   fill         => spans[]
  *   rect/ellipse => x1, y1, x2, y2, filled
+ *   stamp        => imageDataUrl, stampX, stampY, stampW, stampH
  */
 export interface DrawOp {
   id: string;
@@ -63,6 +64,12 @@ export interface DrawOp {
   x2?: number;
   y2?: number;
   filled?: boolean;
+  // stamp (pasted selection)
+  imageDataUrl?: string;
+  stampX?: number;
+  stampY?: number;
+  stampW?: number;
+  stampH?: number;
 }
 
 /** Backward-compat alias. */

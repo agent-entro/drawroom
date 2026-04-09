@@ -2,13 +2,16 @@
  * DrawCanvas — pixel-paint style HTML5 Canvas with Yjs real-time sync.
  *
  * Tools   : pen (smooth freehand), eraser (paints white), fill (flood fill),
- *           rect (rectangle), ellipse (circle/ellipse)
+ *           rect (rectangle), ellipse (circle/ellipse),
+ *           rect-select (rectangular selection), circle-select (elliptical selection)
  * Sync    : ops committed on pointerup => Y.Map => broadcast to all peers
  *           fill ops store result spans (not seed) for deterministic replay
+ *           stamp ops (pasted selections) stored as data URLs for CRDT-safe replay
  * Cursors : remote cursors via Yjs awareness rendered as SVG overlay
  * Undo    : Y.UndoManager per-user (Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z)
  *
- * Keyboard: P=pen, E=eraser, F=fill, R=rect, C=circle/ellipse
+ * Keyboard: P=pen, E=eraser, F=fill, R=rect, C=circle/ellipse, S=rect-select, O=circle-select
+ *           Ctrl/Cmd+C=copy selection, Ctrl/Cmd+V=paste, Escape=clear selection
  */
 
 import { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
@@ -147,6 +150,8 @@ function computeFloodFill(
 
 // ── Canvas rendering ──────────────────────────────────────────────────────────
 
+// Stamp rendering requires the image cache + redraw callback.
+// renderOp handles non-stamp tools; stamp is handled inline in renderAll.
 function renderOp(ctx: CanvasRenderingContext2D, op: DrawOp): void {
   switch (op.tool) {
     case 'pen':
@@ -165,6 +170,7 @@ function renderOp(ctx: CanvasRenderingContext2D, op: DrawOp): void {
     case 'ellipse':
       renderEllipseOp(ctx, op);
       break;
+    // 'stamp' is handled separately in renderAll (needs image cache)
   }
 }
 
@@ -251,6 +257,33 @@ function renderEllipseOp(ctx: CanvasRenderingContext2D, op: DrawOp): void {
   ctx.restore();
 }
 
+/**
+ * Render a stamp op (pasted selection).
+ * Images are cached in a Map to avoid re-creating Image objects on every render.
+ * If the image isn't loaded yet, we set src and schedule a re-render via onNeedsRedraw.
+ */
+function renderStampOp(
+  ctx: CanvasRenderingContext2D,
+  op: DrawOp,
+  cache: Map<string, HTMLImageElement>,
+  onNeedsRedraw: () => void,
+): void {
+  const { imageDataUrl, stampX, stampY, stampW, stampH } = op;
+  if (!imageDataUrl || stampX === undefined || stampY === undefined) return;
+
+  let img = cache.get(imageDataUrl);
+  if (!img) {
+    img = new Image();
+    cache.set(imageDataUrl, img);
+    img.onload = onNeedsRedraw;
+    img.src = imageDataUrl;
+    return; // will re-render when loaded
+  }
+  if (img.complete && img.naturalWidth > 0) {
+    ctx.drawImage(img, stampX, stampY, stampW ?? img.naturalWidth, stampH ?? img.naturalHeight);
+  }
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface CommentPin {
@@ -262,8 +295,31 @@ export interface CommentPin {
   y: number;
 }
 
-// All interactive tools including non-drawing 'comment'
-type ActiveTool = DrawOpTool | 'comment';
+/** Selection tools — local-only, produce no DrawOp until copy/paste is triggered. */
+type SelectTool = 'rect-select' | 'circle-select';
+
+/** Completed or in-progress selection region on the canvas. */
+interface SelectionState {
+  tool: SelectTool;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  complete: boolean;
+}
+
+/** Clipboard entry produced by Ctrl+C on a selection. */
+interface ClipboardEntry {
+  dataUrl: string;
+  w: number;
+  h: number;
+  /** Original top-left of the selection on the canvas — used to offset paste. */
+  sx: number;
+  sy: number;
+}
+
+// All interactive tools including non-drawing 'comment' and select tools
+type ActiveTool = DrawOpTool | 'comment' | SelectTool;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -346,17 +402,30 @@ export default function DrawCanvas({
   const lineWidthRef = useRef<LineWidthOption>(LINE_WIDTHS[1]);
   const filledRef = useRef<boolean>(false);
 
+  // Selection state (rect-select / circle-select)
+  const selectionRef = useRef<SelectionState | null>(null);
+  const activeToolRef = useRef<ActiveTool>('pen');
+  const marchOffsetRef = useRef<number>(0);
+  const selectionAnimFrameRef = useRef<number | null>(null);
+  // Clipboard — local to this browser session (not synced via Yjs)
+  const clipboardRef = useRef<ClipboardEntry | null>(null);
+  // Image cache for stamp ops — avoids re-creating Image objects each render
+  const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+
   // ── UI state ───────────────────────────────────────────────────────────────
 
   const [activeTool, setActiveTool] = useState<ActiveTool>('pen');
-  // Underlying DrawOpTool — 'comment' doesn't map to a draw op
-  const tool = activeTool === 'comment' ? 'pen' : activeTool;
+  // Underlying DrawOpTool — 'comment' and select tools don't map to a draw op
+  const isSelectTool = activeTool === 'rect-select' || activeTool === 'circle-select';
+  const tool = (activeTool === 'comment' || isSelectTool) ? 'pen' : activeTool;
   const [color, setColor] = useState<string>(PRESET_COLORS[0]);
   const [lineWidth, setLineWidth] = useState<LineWidthOption>(LINE_WIDTHS[1]);
   const [filled, setFilled] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState(false);
   const [sizeExpanded, setSizeExpanded] = useState(false);
   const sizeGroupRef = useRef<HTMLDivElement>(null);
+  // Whether a selection exists — drives marching ants animation
+  const [hasSelection, setHasSelection] = useState(false);
 
   // Comment popover state
   const [commentPopover, setCommentPopover] = useState<{ x: number; y: number } | null>(null);
@@ -368,12 +437,18 @@ export default function DrawCanvas({
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { lineWidthRef.current = lineWidth; }, [lineWidth]);
   useEffect(() => { filledRef.current = filled; }, [filled]);
+  useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
 
-  // Collapse size picker when the active tool changes; dismiss comment popover
+  // Collapse size picker when the active tool changes; dismiss comment popover;
+  // clear selection when switching away from a select tool.
   useEffect(() => {
     setSizeExpanded(false);
     setCommentPopover(null);
     setCommentText('');
+    if (activeTool !== 'rect-select' && activeTool !== 'circle-select') {
+      selectionRef.current = null;
+      setHasSelection(false);
+    }
   }, [activeTool]);
 
   // Collapse size picker on outside click
@@ -401,13 +476,61 @@ export default function DrawCanvas({
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     for (const op of strokesRef.current) {
-      renderOp(ctx, op);
+      if (op.tool === 'stamp') {
+        renderStampOp(ctx, op, imageCacheRef.current, () => renderAllRef.current());
+      } else {
+        renderOp(ctx, op);
+      }
     }
     for (const op of remoteActiveStrokesRef.current) {
       renderOp(ctx, op);
     }
     if (activeOpRef.current) {
       renderOp(ctx, activeOpRef.current);
+    }
+
+    // Draw selection overlay (marching ants)
+    const sel = selectionRef.current;
+    if (sel) {
+      const sx = Math.min(sel.x1, sel.x2);
+      const sy = Math.min(sel.y1, sel.y2);
+      const sw = Math.abs(sel.x2 - sel.x1);
+      const sh = Math.abs(sel.y2 - sel.y1);
+      if (sw > 0 && sh > 0) {
+        ctx.save();
+        ctx.lineWidth = 1;
+        // Subtle fill tint
+        ctx.fillStyle = 'rgba(59,130,246,0.07)';
+        if (sel.tool === 'rect-select') {
+          ctx.fillRect(sx, sy, sw, sh);
+        } else {
+          ctx.beginPath();
+          ctx.ellipse(sx + sw / 2, sy + sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // White backing line (makes ants readable on any canvas color)
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.setLineDash([4, 4]);
+        ctx.lineDashOffset = -marchOffsetRef.current;
+        if (sel.tool === 'rect-select') {
+          ctx.strokeRect(sx, sy, sw, sh);
+        } else {
+          ctx.beginPath();
+          ctx.ellipse(sx + sw / 2, sy + sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // Blue dashed line offset by half a period
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineDashOffset = -(marchOffsetRef.current + 4);
+        if (sel.tool === 'rect-select') {
+          ctx.strokeRect(sx, sy, sw, sh);
+        } else {
+          ctx.beginPath();
+          ctx.ellipse(sx + sw / 2, sy + sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
     }
   }, []); // reads from refs — no reactive deps needed
 
@@ -444,6 +567,29 @@ export default function DrawCanvas({
     renderAll();
   }, [remoteActiveStrokes, renderAll]);
 
+  // Marching ants animation — runs while a selection is active
+  useEffect(() => {
+    if (!hasSelection) {
+      if (selectionAnimFrameRef.current !== null) {
+        cancelAnimationFrame(selectionAnimFrameRef.current);
+        selectionAnimFrameRef.current = null;
+      }
+      return;
+    }
+    const animate = () => {
+      marchOffsetRef.current = (marchOffsetRef.current + 0.4) % 16;
+      renderAllRef.current();
+      selectionAnimFrameRef.current = requestAnimationFrame(animate);
+    };
+    selectionAnimFrameRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (selectionAnimFrameRef.current !== null) {
+        cancelAnimationFrame(selectionAnimFrameRef.current);
+        selectionAnimFrameRef.current = null;
+      }
+    };
+  }, [hasSelection]);
+
   // ── Non-passive touchstart on canvas ──────────────────────────────────────
   // React event handlers are passive by default; we need a native listener
   // with { passive: false } so e.preventDefault() actually suppresses iOS
@@ -475,8 +621,21 @@ export default function DrawCanvas({
       if (activeTool === 'comment') {
         setCommentPopover({ x: pos.x, y: pos.y });
         setCommentText('');
-        // Focus the input on next tick
         setTimeout(() => commentInputRef.current?.focus(), 50);
+        return;
+      }
+
+      // Select tools: start a new selection region (clears any existing selection)
+      if (activeTool === 'rect-select' || activeTool === 'circle-select') {
+        selectionRef.current = {
+          tool: activeTool,
+          x1: pos.x, y1: pos.y,
+          x2: pos.x, y2: pos.y,
+          complete: false,
+        };
+        setHasSelection(true);
+        isDrawingRef.current = true;
+        renderAll();
         return;
       }
 
@@ -537,7 +696,19 @@ export default function DrawCanvas({
       const pos = getCanvasPos(e);
       setMyCursor(pos);
 
-      if (!isDrawingRef.current || !activeOpRef.current) return;
+      if (!isDrawingRef.current) return;
+
+      // Update active selection region
+      const curTool = activeToolRef.current;
+      if (curTool === 'rect-select' || curTool === 'circle-select') {
+        if (selectionRef.current) {
+          selectionRef.current = { ...selectionRef.current, x2: pos.x, y2: pos.y };
+          // renderAll runs via the animation frame; no need to call it here
+        }
+        return;
+      }
+
+      if (!activeOpRef.current) return;
 
       const currentTool = toolRef.current;
 
@@ -563,6 +734,17 @@ export default function DrawCanvas({
 
   const handlePointerUp = useCallback(() => {
     isDrawingRef.current = false;
+
+    // Finish selection drag
+    const curTool = activeToolRef.current;
+    if (curTool === 'rect-select' || curTool === 'circle-select') {
+      if (selectionRef.current) {
+        selectionRef.current = { ...selectionRef.current, complete: true };
+        renderAll();
+      }
+      return;
+    }
+
     if (activeOpRef.current) {
       addStroke({ ...activeOpRef.current, complete: true });
       activeOpRef.current = null;
@@ -576,6 +758,69 @@ export default function DrawCanvas({
     setMyActiveStroke(null);
   }, [setMyCursor, setMyActiveStroke]);
 
+  // ── Copy / paste helpers ───────────────────────────────────────────────────
+
+  const copySelection = useCallback(() => {
+    const sel = selectionRef.current;
+    const canvas = canvasRef.current;
+    if (!sel || !canvas) return;
+
+    const sx = Math.min(sel.x1, sel.x2);
+    const sy = Math.min(sel.y1, sel.y2);
+    const sw = Math.abs(sel.x2 - sel.x1);
+    const sh = Math.abs(sel.y2 - sel.y1);
+    if (sw < 2 || sh < 2) return;
+
+    // Render selection to an offscreen canvas
+    const offscreen = document.createElement('canvas');
+    offscreen.width = sw;
+    offscreen.height = sh;
+    const offCtx = offscreen.getContext('2d');
+    if (!offCtx) return;
+
+    if (sel.tool === 'circle-select') {
+      // Clip to ellipse so only the oval region is copied
+      offCtx.save();
+      offCtx.beginPath();
+      offCtx.ellipse(sw / 2, sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
+      offCtx.clip();
+    }
+
+    offCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+    if (sel.tool === 'circle-select') {
+      offCtx.restore();
+    }
+
+    clipboardRef.current = {
+      dataUrl: offscreen.toDataURL(),
+      w: sw,
+      h: sh,
+      sx,
+      sy,
+    };
+  }, []);
+
+  const pasteSelection = useCallback(() => {
+    const cb = clipboardRef.current;
+    if (!cb) return;
+
+    // Paste slightly offset from the original selection position
+    addStroke({
+      id: newOpId(userId),
+      tool: 'stamp',
+      color: '#000000', // unused for stamps
+      lineWidth: 1,
+      userId,
+      complete: true,
+      imageDataUrl: cb.dataUrl,
+      stampX: cb.sx + 20,
+      stampY: cb.sy + 20,
+      stampW: cb.w,
+      stampH: cb.h,
+    });
+  }, [addStroke, userId]);
+
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -583,7 +828,15 @@ export default function DrawCanvas({
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       else if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
-      else if (e.key === 'Escape') { setCommentPopover(null); setCommentText(''); }
+      else if (mod && e.key === 'c') { e.preventDefault(); copySelection(); }
+      else if (mod && e.key === 'v') { e.preventDefault(); pasteSelection(); }
+      else if (e.key === 'Escape') {
+        setCommentPopover(null);
+        setCommentText('');
+        selectionRef.current = null;
+        setHasSelection(false);
+        renderAll();
+      }
       else if (!mod) {
         if (e.key === 'p') setActiveTool('pen');
         else if (e.key === 'e') setActiveTool('eraser');
@@ -591,11 +844,13 @@ export default function DrawCanvas({
         else if (e.key === 'r') setActiveTool('rect');
         else if (e.key === 'c') setActiveTool('ellipse');
         else if (e.key === 'm') setActiveTool('comment');
+        else if (e.key === 's') setActiveTool('rect-select');
+        else if (e.key === 'o') setActiveTool('circle-select');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo]);
+  }, [undo, redo, copySelection, pasteSelection, renderAll]);
 
   // ── Export ─────────────────────────────────────────────────────────────────
 
@@ -674,6 +929,8 @@ export default function DrawCanvas({
       ? fillCursor
       : activeTool === 'rect' || activeTool === 'ellipse'
       ? shapeCursor
+      : activeTool === 'rect-select' || activeTool === 'circle-select'
+      ? 'crosshair'
       : 'crosshair';
 
   const statusColor =
@@ -755,7 +1012,7 @@ export default function DrawCanvas({
         <div
           role="dialog"
           aria-label="Add canvas comment"
-          className="absolute z-20 bg-white border border-gray-200 rounded-xl shadow-xl p-2 flex gap-1.5"
+          className="absolute z-20 bg-white border border-gray-200 rounded-xl shadow-xl p-3 flex gap-2"
           style={{
             left: Math.min(commentPopover.x + 12, window.innerWidth - 260),
             top: Math.min(commentPopover.y - 10, window.innerHeight - 80),
@@ -779,7 +1036,7 @@ export default function DrawCanvas({
             }}
             placeholder="Add a comment… (Enter)"
             maxLength={500}
-            className="flex-1 text-sm px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300"
+            className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300"
             aria-label="Comment text"
           />
           <button
@@ -791,7 +1048,7 @@ export default function DrawCanvas({
               setCommentPopover(null);
               setCommentText('');
             }}
-            className="px-2 py-1.5 text-xs bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
+            className="px-3 py-2 text-xs font-medium bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
             aria-label="Submit comment"
           >
             Post
@@ -803,7 +1060,7 @@ export default function DrawCanvas({
       <div
         role="toolbar"
         aria-label="Drawing tools"
-        className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-gray-200 bg-white px-2.5 py-2 shadow-lg overflow-x-auto max-w-[calc(100vw-1rem)]"
+        className="absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-lg overflow-x-auto max-w-[calc(100vw-1rem)]"
       >
         {/* ── Tool selection ── */}
         <div role="group" aria-label="Tool selection" className="flex items-center gap-0.5">
@@ -844,7 +1101,42 @@ export default function DrawCanvas({
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
           </ToolBtn>
+
+          {/* Rectangle select */}
+          <ToolBtn active={activeTool === 'rect-select'} title="Rectangular select (S)" aria-label="Rectangular selection tool (S)" onClick={() => setActiveTool('rect-select')}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="1" strokeDasharray="4 2"/>
+            </svg>
+          </ToolBtn>
+
+          {/* Circle / ellipse select */}
+          <ToolBtn active={activeTool === 'circle-select'} title="Ellipse select (O)" aria-label="Elliptical selection tool (O)" onClick={() => setActiveTool('circle-select')}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <ellipse cx="12" cy="12" rx="10" ry="7" strokeDasharray="4 2"/>
+            </svg>
+          </ToolBtn>
         </div>
+
+        {/* Copy / Paste actions — shown when a selection is active */}
+        {hasSelection && (
+          <>
+            <Divider />
+            <div role="group" aria-label="Selection actions" className="flex items-center gap-0.5">
+              <ToolBtn title="Copy selection (Ctrl+C)" aria-label="Copy selection (Ctrl+C)" onClick={copySelection}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              </ToolBtn>
+              <ToolBtn title="Paste (Ctrl+V)" aria-label="Paste copied selection (Ctrl+V)" onClick={pasteSelection}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+                  <rect x="8" y="2" width="8" height="4" rx="1"/>
+                </svg>
+              </ToolBtn>
+            </div>
+          </>
+        )}
 
         {/* ── Filled / outlined toggle (shape tools only) ── */}
         {isShapeTool && (
@@ -916,8 +1208,8 @@ export default function DrawCanvas({
 
         <Divider />
 
-        {/* ── Line / brush width (not shown for fill or comment; collapsed until explicitly opened) ── */}
-        {activeTool !== 'fill' && activeTool !== 'comment' && (
+        {/* ── Line / brush width (not shown for fill, comment, or select tools) ── */}
+        {activeTool !== 'fill' && activeTool !== 'comment' && !isSelectTool && (
           <div ref={sizeGroupRef} role="group" aria-label="Brush size" className="flex items-center">
             {/* Collapsed trigger — shows current size dot */}
             <button
@@ -925,7 +1217,7 @@ export default function DrawCanvas({
               aria-label={`Brush size (current: ${lineWidth}px). Click to ${sizeExpanded ? 'collapse' : 'expand'}`}
               aria-expanded={sizeExpanded}
               onClick={() => setSizeExpanded((o) => !o)}
-              className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
+              className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
                 sizeExpanded ? 'bg-blue-100' : 'hover:bg-gray-100'
               }`}
             >
@@ -945,7 +1237,7 @@ export default function DrawCanvas({
                   aria-label={`Size ${w}px${lineWidth === w ? ' (selected)' : ''}`}
                   aria-pressed={lineWidth === w}
                   onClick={() => { setLineWidth(w); setSizeExpanded(false); }}
-                  className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
+                  className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${
                     lineWidth === w ? 'bg-blue-100' : 'hover:bg-gray-100'
                   }`}
                 >
@@ -956,7 +1248,7 @@ export default function DrawCanvas({
           </div>
         )}
 
-        {activeTool !== 'fill' && activeTool !== 'comment' && <Divider />}
+        {activeTool !== 'fill' && activeTool !== 'comment' && !isSelectTool && <Divider />}
 
         {/* ── Undo / Redo ── */}
         <ToolBtn title="Undo (Ctrl+Z)" aria-label="Undo (Ctrl+Z)" onClick={undo}>
@@ -1029,7 +1321,7 @@ function ToolBtn({ active, danger, title, 'aria-label': ariaLabel, onClick, chil
       aria-label={ariaLabel ?? title}
       onClick={onClick}
       className={[
-        'flex h-7 w-7 items-center justify-center rounded-lg transition-colors',
+        'flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
         active
           ? 'bg-blue-100 text-blue-700'
