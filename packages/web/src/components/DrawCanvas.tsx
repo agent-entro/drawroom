@@ -284,6 +284,17 @@ function renderStampOp(
   }
 }
 
+// ── Selection helpers ─────────────────────────────────────────────────────────
+
+/** Returns true if pos falls inside the bounding rect of sel (works for both rect and circle-select). */
+function isInsideSel(sel: SelectionState, pos: { x: number; y: number }): boolean {
+  const sx = Math.min(sel.x1, sel.x2);
+  const sy = Math.min(sel.y1, sel.y2);
+  const sw = Math.abs(sel.x2 - sel.x1);
+  const sh = Math.abs(sel.y2 - sel.y1);
+  return pos.x >= sx && pos.x <= sx + sw && pos.y >= sy && pos.y <= sy + sh;
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface CommentPin {
@@ -407,6 +418,9 @@ export default function DrawCanvas({
   const activeToolRef = useRef<ActiveTool>('pen');
   const marchOffsetRef = useRef<number>(0);
   const selectionAnimFrameRef = useRef<number | null>(null);
+  // Selection drag state — tracks pointer anchor + original selection bounds
+  const isDraggingSelRef = useRef(false);
+  const dragAnchorRef = useRef<{ mx: number; my: number; sx1: number; sy1: number; sx2: number; sy2: number } | null>(null);
   // Clipboard — local to this browser session (not synced via Yjs)
   const clipboardRef = useRef<ClipboardEntry | null>(null);
   // Image cache for stamp ops — avoids re-creating Image objects each render
@@ -426,6 +440,9 @@ export default function DrawCanvas({
   const sizeGroupRef = useRef<HTMLDivElement>(null);
   // Whether a selection exists — drives marching ants animation
   const [hasSelection, setHasSelection] = useState(false);
+  // Whether the pointer is currently hovering inside a completed selection — drives 'move' cursor
+  const [isMouseOverSel, setIsMouseOverSel] = useState(false);
+  const isMouseOverSelRef = useRef(false);
 
   // Comment popover state
   const [commentPopover, setCommentPopover] = useState<{ x: number; y: number } | null>(null);
@@ -625,8 +642,21 @@ export default function DrawCanvas({
         return;
       }
 
-      // Select tools: start a new selection region (clears any existing selection)
+      // Select tools: drag existing selection if pointer is inside it, else start a new one
       if (activeTool === 'rect-select' || activeTool === 'circle-select') {
+        const existingSel = selectionRef.current;
+        if (existingSel && existingSel.complete && isInsideSel(existingSel, pos)) {
+          // Drag mode — record anchor point and original selection corners
+          isDraggingSelRef.current = true;
+          dragAnchorRef.current = {
+            mx: pos.x, my: pos.y,
+            sx1: existingSel.x1, sy1: existingSel.y1,
+            sx2: existingSel.x2, sy2: existingSel.y2,
+          };
+          isDrawingRef.current = true;
+          return;
+        }
+        // New selection — implicitly clears previous one
         selectionRef.current = {
           tool: activeTool,
           x1: pos.x, y1: pos.y,
@@ -698,12 +728,31 @@ export default function DrawCanvas({
 
       if (!isDrawingRef.current) return;
 
-      // Update active selection region
       const curTool = activeToolRef.current;
       if (curTool === 'rect-select' || curTool === 'circle-select') {
-        if (selectionRef.current) {
+        if (isDraggingSelRef.current && selectionRef.current && dragAnchorRef.current) {
+          // Drag the whole selection rectangle
+          const anchor = dragAnchorRef.current;
+          const dx = pos.x - anchor.mx;
+          const dy = pos.y - anchor.my;
+          selectionRef.current = {
+            ...selectionRef.current,
+            x1: anchor.sx1 + dx, y1: anchor.sy1 + dy,
+            x2: anchor.sx2 + dx, y2: anchor.sy2 + dy,
+          };
+          // renderAll runs via the marching ants animation frame
+        } else if (selectionRef.current && !selectionRef.current.complete) {
+          // Resize new selection
           selectionRef.current = { ...selectionRef.current, x2: pos.x, y2: pos.y };
-          // renderAll runs via the animation frame; no need to call it here
+        }
+        // Update 'move' cursor only when not actively drawing/dragging
+        if (!isDrawingRef.current) {
+          const sel = selectionRef.current;
+          const over = !!sel && sel.complete && isInsideSel(sel, pos);
+          if (over !== isMouseOverSelRef.current) {
+            isMouseOverSelRef.current = over;
+            setIsMouseOverSel(over);
+          }
         }
         return;
       }
@@ -735,10 +784,13 @@ export default function DrawCanvas({
   const handlePointerUp = useCallback(() => {
     isDrawingRef.current = false;
 
-    // Finish selection drag
+    // Finish selection drag or new selection
     const curTool = activeToolRef.current;
     if (curTool === 'rect-select' || curTool === 'circle-select') {
-      if (selectionRef.current) {
+      if (isDraggingSelRef.current) {
+        isDraggingSelRef.current = false;
+        dragAnchorRef.current = null;
+      } else if (selectionRef.current && !selectionRef.current.complete) {
         selectionRef.current = { ...selectionRef.current, complete: true };
         renderAll();
       }
@@ -756,6 +808,10 @@ export default function DrawCanvas({
   const handlePointerLeave = useCallback(() => {
     setMyCursor(null);
     setMyActiveStroke(null);
+    if (isMouseOverSelRef.current) {
+      isMouseOverSelRef.current = false;
+      setIsMouseOverSel(false);
+    }
   }, [setMyCursor, setMyActiveStroke]);
 
   // ── Copy / paste helpers ───────────────────────────────────────────────────
@@ -792,14 +848,26 @@ export default function DrawCanvas({
       offCtx.restore();
     }
 
-    clipboardRef.current = {
-      dataUrl: offscreen.toDataURL(),
-      w: sw,
-      h: sh,
-      sx,
-      sy,
-    };
-  }, []);
+    const dataUrl = offscreen.toDataURL('image/png');
+    clipboardRef.current = { dataUrl, w: sw, h: sh, sx, sy };
+
+    // Write PNG blob to the system clipboard so the user can paste outside the browser.
+    // Requires a secure context (HTTPS or localhost) and a user-gesture. Fails silently
+    // in unsupported environments — the internal clipboardRef copy still works.
+    offscreen.toBlob((blob) => {
+      if (!blob) return;
+      navigator.clipboard
+        .write([new ClipboardItem({ 'image/png': blob })])
+        .catch((err) => console.warn('[DrawCanvas] system clipboard write failed:', err));
+    }, 'image/png');
+
+    // Clear the selection after copy so the user can immediately draw or make a new one
+    selectionRef.current = null;
+    setHasSelection(false);
+    isMouseOverSelRef.current = false;
+    setIsMouseOverSel(false);
+    renderAll();
+  }, [renderAll]);
 
   const pasteSelection = useCallback(() => {
     const cb = clipboardRef.current;
@@ -821,6 +889,38 @@ export default function DrawCanvas({
     });
   }, [addStroke, userId]);
 
+  /**
+   * Cut: copies the selection region then erases it with a white filled rect.
+   * The erase is stored as a committed DrawOp so it syncs to all peers via Yjs.
+   */
+  const cutSelection = useCallback(() => {
+    const sel = selectionRef.current;
+    if (!sel) return;
+
+    // Capture bounds before copySelection clears the ref
+    const sx = Math.min(sel.x1, sel.x2);
+    const sy = Math.min(sel.y1, sel.y2);
+    const sw = Math.abs(sel.x2 - sel.x1);
+    const sh = Math.abs(sel.y2 - sel.y1);
+    if (sw < 2 || sh < 2) return;
+
+    // Copy to internal + system clipboard (also clears the selection)
+    copySelection();
+
+    // Erase the region: a white filled rect committed to the shared Yjs doc
+    addStroke({
+      id: newOpId(userId),
+      tool: 'rect',
+      color: '#ffffff',
+      lineWidth: 1,
+      userId,
+      complete: true,
+      x1: sx, y1: sy,
+      x2: sx + sw, y2: sy + sh,
+      filled: true,
+    });
+  }, [copySelection, addStroke, userId]);
+
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -829,6 +929,7 @@ export default function DrawCanvas({
       if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       else if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
       else if (mod && e.key === 'c') { e.preventDefault(); copySelection(); }
+      else if (mod && e.key === 'x') { e.preventDefault(); cutSelection(); }
       else if (mod && e.key === 'v') { e.preventDefault(); pasteSelection(); }
       else if (e.key === 'Escape') {
         setCommentPopover(null);
@@ -850,7 +951,7 @@ export default function DrawCanvas({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, copySelection, pasteSelection, renderAll]);
+  }, [undo, redo, copySelection, cutSelection, pasteSelection, renderAll]);
 
   // ── Export ─────────────────────────────────────────────────────────────────
 
@@ -930,7 +1031,7 @@ export default function DrawCanvas({
       : activeTool === 'rect' || activeTool === 'ellipse'
       ? shapeCursor
       : activeTool === 'rect-select' || activeTool === 'circle-select'
-      ? 'crosshair'
+      ? (isMouseOverSel ? 'move' : 'crosshair')
       : 'crosshair';
 
   const statusColor =
@@ -1117,15 +1218,22 @@ export default function DrawCanvas({
           </ToolBtn>
         </div>
 
-        {/* Copy / Paste actions — shown when a selection is active */}
+        {/* Copy / Cut / Paste actions — shown when a selection is active */}
         {hasSelection && (
           <>
             <Divider />
             <div role="group" aria-label="Selection actions" className="flex items-center gap-0.5">
-              <ToolBtn title="Copy selection (Ctrl+C)" aria-label="Copy selection (Ctrl+C)" onClick={copySelection}>
+              <ToolBtn title="Copy selection (Ctrl+C)" aria-label="Copy selection to clipboard (Ctrl+C)" onClick={copySelection}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <rect x="9" y="9" width="13" height="13" rx="2"/>
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              </ToolBtn>
+              <ToolBtn title="Cut selection (Ctrl+X)" aria-label="Cut selection — copy and erase (Ctrl+X)" onClick={cutSelection}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="6" cy="20" r="2"/><circle cx="6" cy="4" r="2"/>
+                  <line x1="8.12" y1="5.5" x2="20" y2="19"/><line x1="20" y1="5" x2="8.12" y2="18.5"/>
+                  <line x1="8.12" y1="5.5" x2="14" y2="12"/><line x1="8.12" y1="18.5" x2="14" y2="12"/>
                 </svg>
               </ToolBtn>
               <ToolBtn title="Paste (Ctrl+V)" aria-label="Paste copied selection (Ctrl+V)" onClick={pasteSelection}>
