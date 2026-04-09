@@ -82,6 +82,8 @@ export interface PostMessageRequest {
   type?: 'message' | 'comment';
   canvasX?: number;
   canvasY?: number;
+  /** For threaded replies: ID of the root comment pin this is replying to. */
+  parentId?: string;
 }
 
 export function postMessage(slug: string, body: PostMessageRequest): Promise<ChatMessage> {

@@ -31,6 +31,13 @@
     color: #111827;
   }
 
+  @media (prefers-color-scheme: dark) {
+    body {
+      background-color: #111827;
+      color: #f9fafb;
+    }
+  }
+
   /* ─── touch-action overrides ──────────────────────────────────────────── */
 
   /* Nav — allow horizontal pan only */

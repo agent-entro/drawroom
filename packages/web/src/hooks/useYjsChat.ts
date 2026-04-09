@@ -30,6 +30,8 @@ export interface ChatMsgView {
   color: string;
   canvasX: number | null;
   canvasY: number | null;
+  /** For comment replies: ID of the root pin this is replying to. Null for root comments. */
+  parentId: string | null;
   createdAt: string;
 }
 
@@ -53,6 +55,8 @@ export interface SendMessageOptions {
   canvasX?: number;
   canvasY?: number;
   type?: 'message' | 'comment' | 'system';
+  /** For threaded replies: ID of the root comment pin being replied to. */
+  parentId?: string;
 }
 
 export interface YjsChatState {
@@ -85,6 +89,12 @@ export function useYjsChat({
   const participantRef = useRef(participant);
   // IDs we've persisted to avoid re-posting on reconnect
   const persistedIdsRef = useRef<Set<string>>(new Set());
+  // Queue of messages pending REST persistence (flushed after PERSIST_DEBOUNCE_MS)
+  const pendingPersistRef = useRef<StoredChatMsg[]>([]);
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** How long to wait after the last message before flushing to the REST API. */
+  const PERSIST_DEBOUNCE_MS = 5_000;
 
   useEffect(() => {
     participantRef.current = participant;
@@ -98,10 +108,11 @@ export function useYjsChat({
     }
   }, [participant]);
 
-  // Persist a message to the REST API — fire and forget
-  const persistToApi = useCallback(
-    async (msg: StoredChatMsg): Promise<void> => {
-      if (persistedIdsRef.current.has(msg.id)) return;
+  // Flush all queued messages to the REST API in sequence.
+  const flushPersistQueue = useCallback(async (): Promise<void> => {
+    const queue = pendingPersistRef.current.splice(0);
+    for (const msg of queue) {
+      if (persistedIdsRef.current.has(msg.id)) continue;
       persistedIdsRef.current.add(msg.id);
       try {
         await postMessage(roomSlug, {
@@ -111,12 +122,28 @@ export function useYjsChat({
           type: msg.type === 'comment' ? 'comment' : 'message',
           canvasX: msg.canvasX ?? undefined,
           canvasY: msg.canvasY ?? undefined,
+          parentId: msg.parentId ?? undefined,
         });
       } catch {
-        // Non-fatal — message already synced via Yjs
+        // Non-fatal — message already synced via Yjs; will retry on next flush
+        persistedIdsRef.current.delete(msg.id);
       }
+    }
+  }, [roomSlug]);
+
+  // Enqueue a message for debounced REST persistence.
+  // Resets the 5s timer on each call so rapid-fire messages are batched.
+  const persistToApi = useCallback(
+    (msg: StoredChatMsg): void => {
+      if (persistedIdsRef.current.has(msg.id)) return;
+      pendingPersistRef.current.push(msg);
+
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = setTimeout(() => {
+        void flushPersistQueue();
+      }, PERSIST_DEBOUNCE_MS);
     },
-    [roomSlug],
+    [flushPersistQueue],
   );
 
   useEffect(() => {
@@ -178,6 +205,7 @@ export function useYjsChat({
                   color: m.color,
                   canvasX: m.canvasX,
                   canvasY: m.canvasY,
+                  parentId: (m as { parentId?: string | null }).parentId ?? null,
                   createdAt: m.createdAt,
                 });
               }
@@ -214,8 +242,14 @@ export function useYjsChat({
       doc.destroy();
       yChatRef.current = null;
       awarenessRef.current = null;
+      // Flush any queued messages before teardown
+      if (persistTimerRef.current) {
+        clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+        void flushPersistQueue();
+      }
     };
-  }, [roomSlug, wsUrl]);
+  }, [roomSlug, wsUrl, flushPersistQueue]);
 
   const sendMessage = useCallback(
     (content: string, opts?: SendMessageOptions) => {
@@ -235,11 +269,12 @@ export function useYjsChat({
         color: p.color,
         canvasX: opts?.canvasX ?? null,
         canvasY: opts?.canvasY ?? null,
+        parentId: opts?.parentId ?? null,
         createdAt: new Date().toISOString(),
       };
 
       yChat.set(msg.id, msg);
-      void persistToApi(msg);
+      persistToApi(msg);
     },
     [persistToApi],
   );
@@ -255,8 +290,9 @@ export function useYjsChat({
     });
   }, []);
 
+  // Only root comment pins (no parentId). Replies are threaded under their parent.
   const commentPins = messages.filter(
-    (m) => m.type === 'comment' && m.canvasX !== null && m.canvasY !== null,
+    (m) => m.type === 'comment' && m.canvasX !== null && m.canvasY !== null && !m.parentId,
   );
 
   return { messages, typingNames, sendMessage, setTyping, isConnected, commentPins };

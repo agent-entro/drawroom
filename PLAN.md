@@ -618,13 +618,13 @@ Undo: Ctrl+Z → tldraw reverts User A's last stroke only → Yjs propagates del
 
 **Goal:** Canvas export to local filesystem, UI polish, stability.
 
-- [ ] PNG export via tldraw `exportToBlob` → `POST /api/exports` → write to volume
-- [ ] SVG export via tldraw `getSvgString` → same pipeline
-- [ ] `GET /api/exports/:id/download` — streams file from local volume to browser
-- [ ] Room cleanup cron: `node-cron` inside Hono, runs daily at 03:00
-- [ ] UI polish: responsive layout, dark mode (`dark:` classes), loading states, error boundaries, toast notifications
-- [ ] Performance: lazy-load emoji picker, 5s Yjs persistence debounce
-- [ ] Security: rate limiting on room creation (10/hour per IP), message length validation (max 2,000 chars), input sanitization, CSP headers
+- [x] PNG export via tldraw `exportToBlob` → `POST /api/exports` → write to volume
+- [x] SVG export via tldraw `getSvgString` → same pipeline
+- [x] `GET /api/exports/:id/download` — streams file from local volume to browser
+- [x] Room cleanup cron: `node-cron` inside Hono, runs daily at 03:00
+- [x] UI polish: responsive layout, dark mode (`dark:` classes), loading states, error boundaries, toast notifications
+- [x] Performance: lazy-load emoji picker, 5s Yjs persistence debounce
+- [x] Security: rate limiting on room creation (10/hour per IP), message length validation (max 2,000 chars), input sanitization, CSP headers
 
 **Deliverable:** Export works end-to-end. App is stable for daily local use.
 

@@ -258,7 +258,7 @@ export default function ChatPanel({
       <div
         ref={listRef}
         className="flex-1 overflow-y-auto flex flex-col chat-messages-list"
-        style={{ padding: 16, gap: 8 }}
+        style={{ padding: 16, gap: 10 }}
         role="log"
         aria-label="Chat messages"
         aria-live="polite"
@@ -276,8 +276,8 @@ export default function ChatPanel({
       {typingText && <div className="px-3 py-1 text-xs text-gray-400 italic">{typingText}</div>}
 
       {/* Input area */}
-      <div className="border-t border-gray-200 bg-gray-50 p-2">
-        <div className="flex items-center gap-1">
+      <div className="border-t border-gray-200 bg-gray-50 p-3">
+        <div className="flex items-center gap-2">
           <div className="relative flex-1">
             <textarea
               ref={inputRef}

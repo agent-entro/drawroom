@@ -38,6 +38,8 @@ export interface ChatMessage {
   type: MessageType;
   canvasX: number | null;
   canvasY: number | null;
+  /** For comment replies: ID of the root comment pin. Null for root comments. */
+  parentId: string | null;
   createdAt: string; // ISO 8601
 }
 

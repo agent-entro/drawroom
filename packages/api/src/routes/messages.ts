@@ -2,7 +2,14 @@
 import { Hono } from 'hono';
 import { sql } from '../db/client.js';
 import type { ChatMessage } from '@drawroom/shared';
-import { CHAT_HISTORY_PAGE_SIZE } from '@drawroom/shared';
+import { CHAT_HISTORY_PAGE_SIZE, MAX_MESSAGE_LENGTH } from '@drawroom/shared';
+
+/** Strip HTML tags and control characters for basic XSS prevention. */
+function sanitizeContent(input: string): string {
+  return input
+    .replace(/<[^>]*>/g, '') // strip HTML tags
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''); // strip control chars
+}
 
 const messages = new Hono();
 
@@ -41,6 +48,7 @@ messages.get('/', async (c) => {
           m.type,
           m.canvas_x       AS "canvasX",
           m.canvas_y       AS "canvasY",
+          m.parent_id      AS "parentId",
           m.created_at     AS "createdAt",
           COALESCE(p.display_name, 'Unknown') AS "displayName",
           COALESCE(p.color, '#888888')        AS "color"
@@ -61,6 +69,7 @@ messages.get('/', async (c) => {
           m.type,
           m.canvas_x       AS "canvasX",
           m.canvas_y       AS "canvasY",
+          m.parent_id      AS "parentId",
           m.created_at     AS "createdAt",
           COALESCE(p.display_name, 'Unknown') AS "displayName",
           COALESCE(p.color, '#888888')        AS "color"
@@ -96,15 +105,28 @@ messages.post('/', async (c) => {
       type?: string;
       canvasX?: number;
       canvasY?: number;
+      parentId?: string;
     }>();
 
     if (!body.participantId || !body.content?.trim()) {
       return c.json({ error: 'participantId and content are required' }, 400);
     }
 
+    // Validate and sanitize content
+    const rawContent = body.content.trim();
+    if (rawContent.length > MAX_MESSAGE_LENGTH) {
+      return c.json({ error: `Message exceeds maximum length of ${MAX_MESSAGE_LENGTH} characters` }, 400);
+    }
+    const sanitized = sanitizeContent(rawContent);
+    if (!sanitized) {
+      return c.json({ error: 'Message content is empty after sanitization' }, 400);
+    }
+    body.content = sanitized;
+
     // Validate client-provided id is a UUID; ignore if malformed.
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const clientId = body.id && UUID_RE.test(body.id) ? body.id : null;
+    const parentId = body.parentId && UUID_RE.test(body.parentId) ? body.parentId : null;
 
     const [room] = await sql`
       SELECT id FROM rooms WHERE slug = ${slug} AND status != 'deleted'
@@ -120,7 +142,7 @@ messages.post('/', async (c) => {
     // ON CONFLICT DO NOTHING makes the insert idempotent on reconnect/retry.
     const [msg] = clientId
       ? await sql<ChatMessage[]>`
-          INSERT INTO chat_messages (id, room_id, participant_id, content, type, canvas_x, canvas_y)
+          INSERT INTO chat_messages (id, room_id, participant_id, content, type, canvas_x, canvas_y, parent_id)
           VALUES (
             ${clientId}::uuid,
             ${roomId},
@@ -128,7 +150,8 @@ messages.post('/', async (c) => {
             ${body.content.trim()},
             ${type},
             ${body.canvasX ?? null},
-            ${body.canvasY ?? null}
+            ${body.canvasY ?? null},
+            ${parentId}
           )
           ON CONFLICT (id) DO NOTHING
           RETURNING
@@ -139,17 +162,19 @@ messages.post('/', async (c) => {
             type,
             canvas_x       AS "canvasX",
             canvas_y       AS "canvasY",
+            parent_id      AS "parentId",
             created_at     AS "createdAt"
         `
       : await sql<ChatMessage[]>`
-          INSERT INTO chat_messages (room_id, participant_id, content, type, canvas_x, canvas_y)
+          INSERT INTO chat_messages (room_id, participant_id, content, type, canvas_x, canvas_y, parent_id)
           VALUES (
             ${roomId},
             ${body.participantId},
             ${body.content.trim()},
             ${type},
             ${body.canvasX ?? null},
-            ${body.canvasY ?? null}
+            ${body.canvasY ?? null},
+            ${parentId}
           )
           RETURNING
             id,
@@ -159,6 +184,7 @@ messages.post('/', async (c) => {
             type,
             canvas_x       AS "canvasX",
             canvas_y       AS "canvasY",
+            parent_id      AS "parentId",
             created_at     AS "createdAt"
         `;
 

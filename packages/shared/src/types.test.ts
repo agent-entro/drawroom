@@ -79,6 +79,7 @@ describe('ChatMessage type', () => {
       type: 'message',
       canvasX: null,
       canvasY: null,
+      parentId: null,
       createdAt: new Date().toISOString(),
     };
     expect(msg.content).toBe('Hello world');
@@ -94,6 +95,7 @@ describe('ChatMessage type', () => {
       type: 'comment',
       canvasX: 450,
       canvasY: 320,
+      parentId: null,
       createdAt: new Date().toISOString(),
     };
     expect(msg.canvasX).toBe(450);

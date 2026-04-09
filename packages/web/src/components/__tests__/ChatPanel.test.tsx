@@ -19,6 +19,7 @@ const SAMPLE_MSGS: ChatMsgView[] = [
     color: '#4A90D9',
     canvasX: null,
     canvasY: null,
+    parentId: null,
     createdAt: '2026-01-01T10:00:00.000Z',
   },
   {
@@ -30,6 +31,7 @@ const SAMPLE_MSGS: ChatMsgView[] = [
     color: '#E67E22',
     canvasX: null,
     canvasY: null,
+    parentId: null,
     createdAt: '2026-01-01T10:00:05.000Z',
   },
 ];
@@ -212,6 +214,7 @@ describe('ChatPanel', () => {
       color: '#888',
       canvasX: null,
       canvasY: null,
+      parentId: null,
       createdAt: '2026-01-01T10:00:00.000Z',
     };
     render(
@@ -236,6 +239,7 @@ describe('ChatPanel', () => {
       color: '#E67E22',
       canvasX: 100,
       canvasY: 200,
+      parentId: null,
       createdAt: '2026-01-01T10:00:00.000Z',
     };
     render(

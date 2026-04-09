@@ -11,6 +11,7 @@ import { useYjsChat } from '../hooks/useYjsChat.ts';
 import DisplayNameModal from '../components/DisplayNameModal.tsx';
 import ParticipantList from '../components/ParticipantList.tsx';
 import ChatPanel from '../components/ChatPanel.tsx';
+import ErrorBoundary from '../components/ErrorBoundary.tsx';
 
 // Code-split the canvas bundle
 const DrawCanvas = lazy(() => import('../components/DrawCanvas.tsx'));
@@ -55,7 +56,7 @@ export default function RoomPage() {
   });
 
   return (
-    <div className="h-[100dvh] flex flex-col bg-white">
+    <div className="h-[100dvh] flex flex-col bg-white dark:bg-gray-900">
       {/* Display name modal — shown until user has joined */}
       {needsDisplayName && !isLoading && (
         <DisplayNameModal onJoin={joinWithName} error={error} isLoading={isLoading} />
@@ -63,21 +64,21 @@ export default function RoomPage() {
 
       {/* Loading spinner */}
       {isLoading && !participant && !needsDisplayName && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-40">
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-900 z-40">
           <span className="text-gray-400 animate-pulse">Connecting…</span>
         </div>
       )}
 
       {/* Error state (non-join errors) */}
       {error && !needsDisplayName && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-2 shadow">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-red-50 dark:bg-red-900/40 border border-red-200 dark:border-red-700 text-red-700 dark:text-red-300 text-sm rounded-lg px-4 py-2 shadow">
           {error}
         </div>
       )}
 
       {/* Top bar */}
-      <header className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-white shadow-sm z-10 relative">
-        <span className="font-bold text-gray-900 text-lg shrink-0">
+      <header className="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm z-10 relative">
+        <span className="font-bold text-gray-900 dark:text-white text-lg shrink-0">
           Draw<span className="text-blue-600">Room</span>
         </span>
 
@@ -105,9 +106,10 @@ export default function RoomPage() {
       <div className="flex flex-1 overflow-hidden relative">
         {/* Canvas */}
         <section className="flex-1 min-h-0 relative" aria-label="Drawing canvas">
+          <ErrorBoundary>
           <Suspense
             fallback={
-              <div className="absolute inset-0 flex items-center justify-center bg-gray-50">
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-800">
                 <span className="text-gray-400 animate-pulse">Loading canvas…</span>
               </div>
             }
@@ -126,12 +128,32 @@ export default function RoomPage() {
                 color: m.color,
                 x: m.canvasX!,
                 y: m.canvasY!,
+                replies: messages
+                  .filter((r) => r.parentId === m.id)
+                  .map((r) => ({
+                    id: r.id,
+                    content: r.content,
+                    displayName: r.displayName,
+                    color: r.color,
+                    createdAt: r.createdAt,
+                  })),
               }))}
               onCommentCreate={(content, x, y) => {
                 sendMessage(content, { canvasX: x, canvasY: y, type: 'comment' });
               }}
+              onCommentReply={(parentId, content) => {
+                // Replies inherit their parent's canvas coords so the DB constraint is satisfied.
+                const parent = commentPins.find((m) => m.id === parentId);
+                sendMessage(content, {
+                  canvasX: parent?.canvasX ?? 0,
+                  canvasY: parent?.canvasY ?? 0,
+                  type: 'comment',
+                  parentId,
+                });
+              }}
             />
           </Suspense>
+          </ErrorBoundary>
         </section>
 
         {/* Mobile backdrop — tap to close chat */}
@@ -155,7 +177,7 @@ export default function RoomPage() {
           ].join(' ')}
         >
           <ChatPanel
-            messages={messages}
+            messages={messages.filter((m) => m.type !== 'comment')}
             typingNames={typingNames}
             sendMessage={sendMessage}
             setTyping={setTyping}
@@ -186,15 +208,15 @@ export default function RoomPage() {
             >
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
-            {/* Unread badge */}
-            {messages.filter((m) => m.type !== 'system').length > 0 && (
+            {/* Unread badge — only counts chat messages, not spatial comments */}
+            {messages.filter((m) => m.type === 'message').length > 0 && (
               <span
                 className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center rounded-full bg-red-500 text-[10px] font-bold leading-none"
-                aria-label={`${messages.filter((m) => m.type !== 'system').length} messages`}
+                aria-label={`${messages.filter((m) => m.type === 'message').length} messages`}
               >
-                {messages.filter((m) => m.type !== 'system').length > 9
+                {messages.filter((m) => m.type === 'message').length > 9
                   ? '9+'
-                  : messages.filter((m) => m.type !== 'system').length}
+                  : messages.filter((m) => m.type === 'message').length}
               </span>
             )}
           </button>
